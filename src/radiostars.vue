@@ -317,7 +317,7 @@
             :key="index"
             :color="colors[index]"
             v-model="layersOn[freq]"
-            @keyup.enter="console.log(freq); layersOn[freq] = !layersOn[freq]"
+            @keyup.enter="layersOn[freq] = !layersOn[freq]"
             :label="`${freq.replace('_', '.')} MHz`"
             :class="`type${index}`"
             hide-details
@@ -447,7 +447,7 @@ function parseCsvTable(csv: string) {
 }
 
 //let mode = "3D" as "2D" | "3D" | null; //| "full" 
-let mode = "2D" as "3D" | "2D" | null;
+let mode = "3D" as "3D" | "2D" | null;
 
 const CSVS: Record<string, string> = {
   "144_0": MHZ_144_0_CSV,
@@ -758,7 +758,13 @@ export default defineComponent({
       
       // initialize the view to black so that we don't flicker DSS
       this.applySetting(["galacticMode", true]);
-      this.loadHipsWTML().then(() => this.positionSet = true);
+      this.loadHipsWTML()
+        .then(() => {
+          if (mode === "3D") {
+            this.set3DMode();
+          }
+        })
+        .then(() => this.positionSet = true);
 
       this.applySetting(["showConstellationBoundries", false]);  // Note that the typo here is intentional
       this.applySetting(["solarSystemStars", false]);
@@ -827,7 +833,7 @@ export default defineComponent({
       
       this.backgroundImagesets = [...skyBackgroundImagesets];
 
-      Object.entries(DATA_STRINGS).forEach(([freq, string]) => {
+      Object.entries(DATA_STRINGS).forEach(([freq, string], index) => {
         this.createTableLayer({
           name: `${Number(freq).toFixed(1)} MHz`,
           referenceFrame: "Sky",
@@ -840,12 +846,13 @@ export default defineComponent({
           layer.set_altType(AltTypes.distance);
           layer.set_markerScale(MarkerScales.screen);
           layer.set_showFarSide(true);
+          const twoD = mode === "2D";
           this.applyTableLayerSettings({
             id: layer.id.toString(),
             settings: [
-              ["scaleFactor", 45],
-              ["plotType", PlotTypes.circle],
-              ["color", Color.fromHex(this.colors[0])],
+              ["scaleFactor", twoD ? 35 : 25],
+              ["plotType", twoD ? PlotTypes.circle : PlotTypes.gaussian],
+              ["color", Color.fromHex(this.colors[index])],
               //["sizeColumn", 4],
               //["pointScaleType", PointScaleTypes.log],
               ["opacity", 1.0]
@@ -889,12 +896,15 @@ export default defineComponent({
       this.loadImageCollection({
         url: this.bgWtml,
         loadChildFolders: true,
-      }).then((_folder) => {
-        this.curBackgroundImagesetName = this.bgName;
-        this.backgroundImagesets.unshift(
-          new BackgroundImageset("NASA Deep Star Maps (Optical)", "Deep Star Maps 2020")
-        );
-      });
+      })
+        .then((_folder) => {
+          if (mode === "2D") {
+            this.curBackgroundImagesetName = this.bgName;
+          }
+          this.backgroundImagesets.unshift(
+            new BackgroundImageset("NASA Deep Star Maps (Optical)", "Deep Star Maps 2020")
+          );
+        });
 
       Object.keys(this.layersOn).forEach(freq => {
         this.$watch(`layersOn.${freq}`, (on: boolean) => {
