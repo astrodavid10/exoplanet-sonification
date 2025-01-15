@@ -379,7 +379,7 @@
 import { defineComponent, PropType, onMounted, ref } from 'vue';
 import { csvFormatRows, csvParse } from "d3-dsv";
 import { distance } from "@wwtelescope/astro";
-import { Color, Constellations, Folder, Layer, LayerManager, RenderContext, Settings, SpreadSheetLayer, WWTControl } from "@wwtelescope/engine"; //Grids, Poly
+import { Color, Constellations, Folder, Grids, Layer, LayerManager, RenderContext, Settings, SpreadSheetLayer, Texture, WWTControl } from "@wwtelescope/engine"; //Grids, Poly
 import { AltTypes, AltUnits, MarkerScales, PlotTypes, RAUnits, Thumbnail } from "@wwtelescope/engine-types"; //ImageSetType, PointScaleTypes
 import { GotoRADecZoomParams } from "@wwtelescope/engine-pinia";
 import L, { Map } from "leaflet"; //LeafletMouseEvent
@@ -921,6 +921,8 @@ export default defineComponent({
       // @ts-ignore
       Constellations.initializeConstellationNames = initializeConstellationNames;
       //Grids._makeAltAzGridText = makeAltAzGridText;
+
+      Grids._milkyWayImage = Texture.fromUrl("https://data1.wwtassets.org/packages/2025/01_gaia_milky_way/Gaia-HighContrast-MilkyWay-sm.jpg");
 
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore
