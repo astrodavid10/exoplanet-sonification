@@ -919,10 +919,15 @@ interface PointData {
   dec: number;
   name: string;
   gdist: string;
-  cat: string; 
+  cat: string;
   color: Color;
-  plOrbper: number; 
+  plOrbper: number;
   endDate: Date;
+  // Index into ALL_POINTS / ALL_POINTS_3D, which are index-aligned and match
+  // the renderer's static vertex-buffer row order. This is what cloudStartPing
+  // and cloudSetSearchRing address, so carrying it here lets hover fire a
+  // world-space ping without re-deriving the row. -1 when unknown.
+  rowIndex: number;
 }
 
 //interface AudioContextHolder {
@@ -2330,6 +2335,7 @@ export default defineComponent({
       let minDistSq = Infinity;
       let bestScreenX = 0;
       let bestScreenY = 0;
+      let bestIndex = -1;
       let closestRow: Hit3DRow | null = null;
 
       for (let i = 0; i < ALL_POINTS_3D.length; i++) {
@@ -2358,6 +2364,7 @@ export default defineComponent({
           minDistSq = dSq;
           bestScreenX = sx;
           bestScreenY = sy;
+          bestIndex = i;
           closestRow = r;
         }
       }
@@ -2376,6 +2383,7 @@ export default defineComponent({
         plOrbper: closestRow.plOrbper,
         endDate: closestRow.endDate,
         color: { toString: () => colorStr } as unknown as Color,
+        rowIndex: bestIndex,
       };
     },
 
@@ -2406,6 +2414,7 @@ export default defineComponent({
       let minDistSq = Infinity;
       let bestScreenX = 0;
       let bestScreenY = 0;
+      let bestIndex = -1;
       let closestRow: Hit3DRow | null = null;
 
       for (let i = 0; i < ALL_POINTS_3D.length; i++) {
@@ -2433,6 +2442,7 @@ export default defineComponent({
           minDistSq = dSq;
           bestScreenX = sx;
           bestScreenY = sy;
+          bestIndex = i;
           closestRow = r;
         }
       }
@@ -2451,6 +2461,7 @@ export default defineComponent({
         plOrbper: closestRow.plOrbper,
         endDate: closestRow.endDate,
         color: { toString: () => colorStr } as unknown as Color,
+        rowIndex: bestIndex,
       };
     },
 
@@ -2565,17 +2576,32 @@ export default defineComponent({
         this.lastClosePt.dec != closestPt.dec;
       if (needsUpdate) {
         this.lastClosePt = closestPt;
-        // Hover/reticle sonifies the planet under the cursor (desktop hover and
-        // the mobile reticle both land here). Rate-limited by HOVER_TONE_MIN_MS
-        // because in a dense field the nearest planet changes almost every
-        // frame while panning. Timeline playback owns the audio while it runs.
+        // Hover/reticle sonifies AND pings the planet under the cursor (desktop
+        // hover and the mobile reticle both land here). Rate-limited by
+        // HOVER_TONE_MIN_MS because in a dense field the nearest planet changes
+        // almost every frame while panning. Timeline playback owns the feedback
+        // while it runs.
+        //
+        // Tone and ping share one gate deliberately: they are two halves of the
+        // same "you are on this planet" cue, so throttling them independently
+        // would let them drift out of step.
         if (closestPt != null && !this.isPlaying) {
           const now = performance.now();
-          const period = closestPt.plOrbper;
-          if (now - this.lastHoverToneMs >= HOVER_TONE_MIN_MS &&
-              Number.isFinite(period) && period > 0) {
+          if (now - this.lastHoverToneMs >= HOVER_TONE_MIN_MS) {
             this.lastHoverToneMs = now;
-            this.playPointTone(period, HOVER_TONE_GAIN);
+            const period = closestPt.plOrbper;
+            if (Number.isFinite(period) && period > 0) {
+              this.playPointTone(period, HOVER_TONE_GAIN);
+            }
+            // World-space ring via the renderer's ping pass, anchored to the
+            // planet's own vertex so it tracks the dot if the camera moves.
+            // Works in both 2D and 3D — cloudStartPing addresses rows by index,
+            // and the shader picks the matching 2D/3D vertex for the mode.
+            if (closestPt.rowIndex >= 0) {
+              cloudStartPing(closestPt.rowIndex, now, {
+                color: colorForCat(closestPt.cat),
+              });
+            }
           }
         }
       }
@@ -2710,8 +2736,12 @@ export default defineComponent({
       if (Number.isFinite(pt.plOrbper) && pt.plOrbper > 0) {
         this.playPointTone(pt.plOrbper);
       }
-      // Show info popup for the searched planet
+      // Show info popup for the searched planet.
+      // Vue 3 wraps data-bound array items in reactive proxies, so the `pt` we
+      // received from the template is a Proxy, not the raw ALL_POINTS row that
+      // keys ROW_INDEX_OF. toRaw() unwraps it so the Map lookup succeeds.
       const colorStr = colorForCat(pt.cat);
+      const searchRowIdx = ROW_INDEX_OF.get(toRaw(pt)) ?? -1;
       this.lastClosePt = {
         x: window.innerWidth / 2,
         y: window.innerHeight / 2,
@@ -2723,6 +2753,7 @@ export default defineComponent({
         plOrbper: pt.plOrbper,
         endDate: pt.endDate,
         color: { toString: () => colorStr } as unknown as Color,
+        rowIndex: searchRowIdx,
       };
       // Pin the popup so hover doesn't clear it; arm camera-move clearing only
       // after the slew has had time to settle.
@@ -2732,15 +2763,10 @@ export default defineComponent({
       // Now world-space via the renderer's ring pass — the previous CSS
       // overlay re-projected on every wwt watcher tick; the ring pass anchors
       // to the planet's vertex automatically.
-      // Vue 3 wraps data-bound array items in reactive proxies, so the `pt`
-      // we received from the template is a Proxy, not the raw ALL_POINTS row
-      // that keys ROW_INDEX_OF. toRaw() unwraps it back to the original
-      // reference so the Map lookup succeeds.
-      const rowIdx = ROW_INDEX_OF.get(toRaw(pt));
-      if (rowIdx !== undefined) {
-        cloudSetSearchRing(rowIdx, { color: colorStr });
+      if (searchRowIdx >= 0) {
+        cloudSetSearchRing(searchRowIdx, { color: colorStr });
         // Transient pulse on top of the persistent ring.
-        cloudStartPing(rowIdx, performance.now(), { color: colorStr });
+        cloudStartPing(searchRowIdx, performance.now(), { color: colorStr });
       }
     },
 
