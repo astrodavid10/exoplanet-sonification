@@ -1,9 +1,19 @@
 # Exoplanet custom WebGL renderer — migration plan
 
-Self-contained handoff doc for continuing the migration from WWT's
-`SpreadSheetLayer` point rendering to a custom WebGL renderer
-(`src/exoplanet-renderer.ts`). Written so that a new session (post-compact)
-has everything it needs to continue.
+> **STATUS: COMPLETE — this is a historical document, not a task list.**
+>
+> All six steps shipped; `src/exoplanet-renderer.ts` is live and hooked in via
+> `exo-sonification.vue` (`installExoplanetCloud`) and `wwt-hacks.ts`
+> (`drawExoplanetCloud`, `isExoplanetLayerName`).
+>
+> Everything below the "Remaining steps" heading is retained **design
+> rationale for work already done**, not instructions to carry out. Read it to
+> understand *why* the renderer is shaped the way it is — in particular the
+> vertex layout, the days-since-1990 date encoding, and the footgun list at the
+> end, which are all still accurate. Do not follow its imperative steps.
+
+Self-contained handoff doc for the migration from WWT's `SpreadSheetLayer`
+point rendering to a custom WebGL renderer (`src/exoplanet-renderer.ts`).
 
 ## Why we're doing this
 
