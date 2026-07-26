@@ -1,10 +1,12 @@
+# ── Build output ──────────────────────────────────────────────────────────
+# (The old `!./dist/index.html` negation here was an invalid pattern — entries
+# cannot start with "./" — so it had silently never applied. dist/ is a build
+# artifact whose filenames are content-hashed; nothing in it belongs in git.)
 **/dist/*
-!./dist/index.html
-
-node_modules/
 tsconfig.tsbuildinfo
-/.vs/
-*.log
+
+# ── Dependencies ──────────────────────────────────────────────────────────
+node_modules/
 
 **/.yarn/*
 !**/.yarn/releases
@@ -14,13 +16,37 @@ tsconfig.tsbuildinfo
 !**/.yarn/versions
 
 .pnp.*
-.DS_Store
 
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# ── Large local assets (NOT for git) ───────────────────────────────────────
+# data/samples/soundfonts/organ.sf2 is ~157 MB — well over GitHub's 100 MB
+# hard limit. It is only used by the optional local play_point_server.py dev
+# helper; the shipping app plays pre-rendered WAVs from public/sounds/.
+data/
+*.sf2
+
+# ── Local working copies / scratch ────────────────────────────────────────
+backup-src/
+src - backup2/
+*.xcf
+log.txt
+*.log
+
+# ── Editor / OS ───────────────────────────────────────────────────────────
+/.vs/
+.vscode/settings.json
+.claude/
 .DS_Store
 */.DS_Store
 */*/.DS_Store
-.vscode/settings.json
 
+# ── Tests / secrets ───────────────────────────────────────────────────────
 **/tests_output/**
-
+.env
 *.env
