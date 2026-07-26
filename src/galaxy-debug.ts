@@ -47,6 +47,8 @@ function init(ctx: any): void {
   ctx.shaderSource(f, FRAG_SRC); ctx.compileShader(f);
   const p = ctx.createProgram();
   ctx.attachShader(p, v); ctx.attachShader(p, f); ctx.linkProgram(p);
+  // Refcounted by the linked program — drop our references.
+  ctx.deleteShader(v); ctx.deleteShader(f);
   prog = p;
   aPos = ctx.getAttribLocation(p, "aPos");
   uMV = ctx.getUniformLocation(p, "uMVMatrix");

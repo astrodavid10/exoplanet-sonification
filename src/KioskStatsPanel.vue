@@ -79,21 +79,19 @@
 
 <script lang="ts">
 import { defineComponent } from "vue";
-import { statsExportCsv, statsExportJson, statsClear, StatsMap, DayRollup } from "./kioskStats";
-
-const STORAGE_KEY = "kioskStats:v1";
+// readStore is imported rather than reimplemented: the local copy parsed
+// without validating the result, so a stored "null" (which JSON.parse accepts,
+// returning null) set store = null and made the days() computed throw on
+// Object.keys(null) — outside its try/catch — blanking the whole panel. The
+// module version rejects null/array/primitive payloads and repairs short
+// hourly arrays. It also owns STORAGE_KEY, so the panel no longer carries a
+// duplicate literal that a rename could silently orphan.
+import {
+  statsExportCsv, statsExportJson, statsClear, readStore, StatsMap, DayRollup,
+} from "./kioskStats";
 
 interface DayRow extends DayRollup { date: string; avgDwellMs: number; }
 interface Ranked { name: string; count: number; }
-
-function readStore(): StatsMap {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as StatsMap) : {};
-  } catch {
-    return {};
-  }
-}
 
 export default defineComponent({
   name: "KioskStatsPanel",

@@ -1,6 +1,8 @@
 # ── Build output ──────────────────────────────────────────────────────────
+# (The old `!./dist/index.html` negation here was an invalid pattern — entries
+# cannot start with "./" — so it had silently never applied. dist/ is a build
+# artifact whose filenames are content-hashed; nothing in it belongs in git.)
 **/dist/*
-!dist/index.html
 tsconfig.tsbuildinfo
 
 # ── Dependencies ──────────────────────────────────────────────────────────
