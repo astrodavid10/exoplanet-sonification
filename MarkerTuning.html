@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Exoplanet Marker Tuning</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 920px;
+    margin: 2rem auto;
+    padding: 0 1.5rem 4rem;
+    color: #1f2933;
+    line-height: 1.5;
+  }
+  h1 { border-bottom: 2px solid #1671e0; padding-bottom: 0.3rem; }
+  h2 { color: #1671e0; margin-top: 2.2rem; }
+  h3 { color: #2b5b8c; margin-top: 1.4rem; }
+  code, pre {
+    font-family: "SF Mono", Consolas, Menlo, monospace;
+    font-size: 0.92em;
+    background: #f3f5f7;
+    border-radius: 4px;
+  }
+  code { padding: 0.1em 0.35em; }
+  pre {
+    padding: 0.8rem 1rem;
+    overflow-x: auto;
+    border-left: 3px solid #1671e0;
+  }
+  table {
+    border-collapse: collapse;
+    margin: 0.8rem 0;
+    width: 100%;
+    font-size: 0.93em;
+  }
+  th, td {
+    border: 1px solid #cfd6dc;
+    padding: 0.4rem 0.6rem;
+    text-align: left;
+  }
+  th { background: #eef2f6; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .note {
+    background: #fff8e1;
+    border-left: 3px solid #f1a32a;
+    padding: 0.6rem 1rem;
+    margin: 0.8rem 0;
+    border-radius: 4px;
+  }
+  .plan {
+    background: #eaf4ff;
+    border-left: 3px solid #1671e0;
+    padding: 0.6rem 1rem;
+    margin: 0.8rem 0;
+    border-radius: 4px;
+  }
+  .diff {
+    background: #f8f9fa;
+    border: 1px solid #dde2e6;
+    border-radius: 4px;
+    padding: 0.6rem 0.9rem;
+    font-family: "SF Mono", Consolas, Menlo, monospace;
+    font-size: 0.88em;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .add { background: #e6f7ec; }
+  .del { background: #fdecea; text-decoration: line-through; opacity: 0.75; }
+  ul.compact li { margin-bottom: 0.15rem; }
+</style>
+</head>
+<body>
+
+<h1>Exoplanet Marker Tuning</h1>
+<p>
+  Reference doc for the marker (dot) and reticle visuals used in
+  <code>exo-sonification.vue</code> and <code>exoplanet-renderer.ts</code>.
+  Section 1 documents the recent tuning pass. Section 2 explains how the
+  current per-frame size formula works. Section 3 proposes a zoom-adaptive
+  scaling change <strong>pending approval</strong> — not yet implemented.
+</p>
+
+<!-- ============================================================= -->
+<h2>1. Recent tuning changes</h2>
+
+<h3>1.1 Dot sizes (<code>exoplanet-renderer.ts:780-781</code>)</h3>
+<p>
+  Dot size is set in CSS px per mode and per device. The renderer multiplies
+  by <code>devicePixelRatio</code> before uploading to the shader, and runs
+  the result through the log-zoom formula in §2 to get the final pixel size.
+</p>
+<table>
+  <thead>
+    <tr><th>Constant</th><th>Mobile (coarse pointer)</th><th>Desktop</th><th>Change</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>DEFAULT_DOT_SIZE_2D</code></td>
+      <td class="num">4 &rarr; <strong>7</strong></td>
+      <td class="num">6 &rarr; <strong>9</strong></td>
+      <td>+3 px both — circles read clearly at typical FOVs</td>
+    </tr>
+    <tr>
+      <td><code>DEFAULT_DOT_SIZE_3D</code></td>
+      <td class="num">2 &rarr; <strong>1</strong></td>
+      <td class="num">4 (unchanged)</td>
+      <td>Mobile only, ~2 device px reduction at typical DPR</td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  Both values are overridable at runtime via
+  <code>window.__cloudDotSize</code> (global) or
+  <code>window.__cloudDotSize2D</code> / <code>window.__cloudDotSize3D</code>
+  (per-mode) — useful for quick A/B without rebuilding.
+</p>
+
+<h3>1.2 Mobile reticle (<code>exo-sonification.vue</code>)</h3>
+<table>
+  <thead>
+    <tr><th>Aspect</th><th>Before</th><th>After</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Overlay size</td><td class="num">110 &times; 110 px</td><td class="num">99 &times; 99 px (90 %)</td></tr>
+    <tr><td>Outer dashed-ring alpha</td><td class="num">0.25</td><td class="num">0.40</td></tr>
+    <tr><td>Inner &ldquo;planet&rdquo; circle alpha / stroke</td><td class="num">0.80 / 1.5 px</td><td class="num">1.00 / 1.75 px</td></tr>
+    <tr><td>Ellipse &ldquo;rings&rdquo; alpha</td><td class="num">0.60</td><td class="num">0.85</td></tr>
+    <tr><td>Center dot alpha</td><td class="num">0.90</td><td class="num">1.00</td></tr>
+    <tr><td>Drop-shadow glow</td><td class="num">4 px @ 0.4</td><td class="num">5 px @ 0.6</td></tr>
+    <tr><td>Sonification radius (px threshold)</td><td class="num">55</td><td class="num">17</td></tr>
+  </tbody>
+</table>
+<p>
+  The sonification radius is no longer the outer dashed ring; it now
+  matches the inner &ldquo;planet shape&rdquo; circle. In the 120-unit SVG
+  viewBox that circle has r = 20; on the 99-px overlay that resolves to
+  <code>99 &times; (20 / 120) = 16.5</code> screen px, rounded up to 17.
+</p>
+
+<h3>1.3 Tuning knobs</h3>
+<ul class="compact">
+  <li><strong>2D dot size</strong> — <code>DEFAULT_DOT_SIZE_2D</code> in <code>exoplanet-renderer.ts:780</code>.</li>
+  <li><strong>3D dot size</strong> — <code>DEFAULT_DOT_SIZE_3D</code> in <code>exoplanet-renderer.ts:781</code>.</li>
+  <li><strong>Reticle physical size</strong> — <code>.reticle-overlay { width, height }</code> in the LESS block. If you change it, also scale the sonification threshold by <code>width / 120 &times; 20</code>.</li>
+  <li><strong>Reticle visibility</strong> — alphas in the four SVG primitives on lines 287&ndash;290, plus the <code>filter: drop-shadow(…)</code> on <code>.reticle-overlay svg</code>.</li>
+  <li><strong>Hollow vs filled disc</strong> — <code>window.__cloudHollow2D</code> / <code>__cloudHollow3D</code>.</li>
+</ul>
+
+<!-- ============================================================= -->
+<h2>2. How marker scale works today</h2>
+
+<p>
+  The marker shader runs in <strong>screen space</strong>: every dot uploads
+  a single pixel-size uniform per frame, so individual dots stay the same
+  size regardless of where they sit in the world. This is the property we
+  want to preserve. (Without it, a dot 10&nbsp;kpc away would be 10<sup>6</sup>&times;
+  smaller than one in the solar neighbourhood and we&rsquo;d see nothing.)
+</p>
+
+<p>
+  The pixel size <em>is</em> log-zoom adaptive today, but the calibration
+  was inherited from a 3D-only era. The formula in
+  <code>exoplanet-renderer.ts:787-793</code> is:
+</p>
+
+<pre>const sizeMin = sizeForMode;
+const sizeMax = sizeForMode * 1.5;
+const b = (sizeMax - sizeMin) / 10;   // = 0.05 &middot; base
+const a = sizeMax - b * 20;           // = 0.50 &middot; base
+sizeForMode = Math.round(a + b * Math.log(renderContext.viewCamera.zoom));
+// &equiv; base &middot; (0.5 + 0.05 &middot; ln(zoom)), rounded.</pre>
+
+<p>What the formula <em>actually</em> produces, given <code>base</code>:</p>
+<table>
+  <thead>
+    <tr><th>Mode</th><th>Camera zoom</th><th>ln(zoom)</th><th>Factor</th><th>Effect when user&hellip;</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>2D</td><td>60° (wide)</td><td class="num">4.09</td><td class="num">0.70</td><td rowspan="3"><strong>zooms in → dots shrink</strong> ❌ (opposite of intuition)</td></tr>
+    <tr><td>2D</td><td>8° (search default)</td><td class="num">2.08</td><td class="num">0.60</td></tr>
+    <tr><td>2D</td><td>0.5° (deep zoom)</td><td class="num">−0.69</td><td class="num">0.47</td></tr>
+    <tr><td>3D</td><td>100 AU (close)</td><td class="num">4.61</td><td class="num">0.73</td><td rowspan="3"><strong>zooms out → dots grow</strong> ❌ (opposite of intuition)</td></tr>
+    <tr><td>3D</td><td>13 333 AU (default view)</td><td class="num">9.50</td><td class="num">0.98</td></tr>
+    <tr><td>3D</td><td>10<sup>9</sup> AU (far out)</td><td class="num">20.7</td><td class="num">1.54</td></tr>
+  </tbody>
+</table>
+
+<p>
+  So in both modes the current behavior runs <em>opposite</em> to what
+  feels right perceptually. The §3 proposal flips the slope per mode and
+  recenters the &ldquo;1.0&times;&rdquo; reference zoom so the default view
+  matches the freshly-tuned base sizes from §1.
+</p>
+
+<!-- ============================================================= -->
+<h2>3. Proposal: zoom-adaptive scaling (awaiting approval)</h2>
+
+<div class="plan">
+  <strong>Goal.</strong> Keep markers in screen space (no world-space sizing),
+  but make the per-frame pixel size respond to camera zoom so that:
+  <ul class="compact">
+    <li><strong>2D:</strong> zooming in significantly (≈10° &rarr; 1°) <em>grows</em> the circle a little.</li>
+    <li><strong>3D:</strong> zooming far away from the field <em>shrinks</em> the dot; close-in stays at the §1 base.</li>
+  </ul>
+</div>
+
+<h3>3.1 Proposed formula</h3>
+<p>
+  Replace the current <code>a + b·ln(zoom)</code> shape with a per-mode
+  log-octave ramp that has a tunable reference zoom, a slope per octave,
+  and explicit clamps. Pseudocode:
+</p>
+
+<pre>function sizeForZoom(base, zoom, refZoom, slopePerOctave, minScale, maxScale) {
+  const octaves = Math.log2(refZoom / zoom);   // +ve when zoomed IN relative to ref
+  const scale = clamp(1 + slopePerOctave * octaves, minScale, maxScale);
+  return base * scale;   // rounded once, just before upload
+}</pre>
+
+<p>Per-mode proposed defaults:</p>
+
+<table>
+  <thead>
+    <tr><th>Mode</th><th><code>refZoom</code></th><th><code>slopePerOctave</code></th><th>Min scale</th><th>Max scale</th><th>Direction</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>2D (FOV in deg)</td>
+      <td class="num">30°</td>
+      <td class="num">+0.12</td>
+      <td class="num">1.00</td>
+      <td class="num">1.45</td>
+      <td>Grow when zooming in, never shrink below base</td>
+    </tr>
+    <tr>
+      <td>3D (AU)</td>
+      <td class="num">15 000 AU</td>
+      <td class="num">−0.18</td>
+      <td class="num">0.30</td>
+      <td class="num">1.00</td>
+      <td>Shrink when zooming out, never grow above base</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  Note the sign flip: in 3D <code>octaves &gt; 0</code> means zoomed
+  <em>closer than</em> ref and we want size = base, so slope is negative.
+  Equivalently we can split out the sign and compute <code>octavesOut =
+  log2(zoom / refZoom)</code>; the math is the same.
+</p>
+
+<h3>3.2 Predicted sizes</h3>
+<p>
+  Using the §1 base sizes — desktop 2D = 9 px, mobile 2D = 7 px, desktop 3D
+  = 4 px, mobile 3D = 1 px — and the §3.1 defaults:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Mode</th><th>Camera zoom</th><th>Scale</th><th>Desktop px</th><th>Mobile px</th></tr>
+  </thead>
+  <tbody>
+    <tr><td rowspan="5">2D</td><td>60° (wide overview)</td><td class="num">1.00 (clamped)</td><td class="num">9</td><td class="num">7</td></tr>
+    <tr><td>30° (ref)</td><td class="num">1.00</td><td class="num">9</td><td class="num">7</td></tr>
+    <tr><td>8° (search target)</td><td class="num">1.23</td><td class="num">11</td><td class="num">9</td></tr>
+    <tr><td>2° (zoomed in)</td><td class="num">1.45 (clamped)</td><td class="num">13</td><td class="num">10</td></tr>
+    <tr><td>0.5° (deep zoom)</td><td class="num">1.45 (clamped)</td><td class="num">13</td><td class="num">10</td></tr>
+    <tr><td rowspan="5">3D</td><td>1 000 AU (close)</td><td class="num">1.00 (clamped)</td><td class="num">4</td><td class="num">1</td></tr>
+    <tr><td>15 000 AU (ref)</td><td class="num">1.00</td><td class="num">4</td><td class="num">1</td></tr>
+    <tr><td>100 000 AU</td><td class="num">0.51</td><td class="num">2</td><td class="num">1*</td></tr>
+    <tr><td>10<sup>6</sup> AU</td><td class="num">0.30 (clamped)</td><td class="num">1</td><td class="num">1*</td></tr>
+    <tr><td>10<sup>9</sup> AU (whole galaxy)</td><td class="num">0.30 (clamped)</td><td class="num">1</td><td class="num">1*</td></tr>
+  </tbody>
+</table>
+<p style="font-size: 0.85em; color: #555;">
+  * Mobile 3D base is already 1 px so it can&rsquo;t round below 1. If we
+  want it to actually disappear at extreme zoom-out we&rsquo;d need to skip
+  the integer round on the way down (or accept that mobile 3D dots stay
+  at 1 px regardless).
+</p>
+
+<h3>3.3 Implementation footprint</h3>
+<p>Two-file change, all inside the existing <code>drawDots</code> hot path:</p>
+
+<ul class="compact">
+  <li>
+    <strong><code>src/exoplanet-renderer.ts</code></strong> — replace the
+    five-line block at <code>787-791</code> with the §3.1 helper. The
+    surrounding <code>gl.uniform1f(_uPixelScale, sizeForMode * dpr)</code>
+    line stays the same; only the way <code>sizeForMode</code> is computed
+    changes.
+  </li>
+  <li>
+    Per-mode config (refZoom, slope, min/max) lives as module-level consts
+    at the top of <code>exoplanet-renderer.ts</code> so they&rsquo;re findable
+    and tuneable in one place. Optional <code>window.__markerScaleDebug =
+    true</code> would log <code>{zoom, octaves, scale, sizeFinal}</code> per
+    frame for in-browser tuning.
+  </li>
+  <li>
+    No call-site changes — the rest of the renderer already treats
+    <code>sizeForMode</code> as opaque CSS px.
+  </li>
+</ul>
+
+<h3>3.4 Reversion strategy</h3>
+<p>
+  The new helper sits between the existing constants and
+  <code>gl.uniform1f</code>. To revert, restore the five-line
+  <code>a + b·ln(zoom)</code> block and delete the helper plus the
+  module-level config consts. No engine patches, no schema changes.
+</p>
+
+<h3>3.5 Edge cases worth flagging</h3>
+<ul class="compact">
+  <li>
+    <strong>Mode switch during a slew.</strong>
+    <code>renderContext.viewCamera.zoom</code> can transiently be in the
+    middle of an interpolation. The helper is stateless, so it just produces
+    the right size for whatever zoom is current — no special handling needed.
+  </li>
+  <li>
+    <strong>Per-device base vs. zoom adaptation interaction.</strong> Mobile
+    3D base is already 1 px so the shrink-on-zoom-out behavior is mostly
+    invisible there. If we want the effect to be perceptible on mobile, we&rsquo;d
+    bump the 3D mobile base back to 2 px and let the formula scale it down.
+    That contradicts §1.2&rsquo;s recent change — flagged for your call.
+  </li>
+  <li>
+    <strong>The <code>Math.round</code>.</strong> Today&rsquo;s code rounds
+    once. New code should also round once (after the multiply) to avoid
+    flicker between adjacent integer sizes during smooth zooms. The shader
+    accepts a float, so rounding is purely cosmetic; we could also drop it
+    entirely to get sub-pixel sizes (anti-aliased dots look smoother under
+    continuous zoom).
+  </li>
+</ul>
+
+<h3>3.6 Open questions for approval</h3>
+<ol>
+  <li>Are the §3.1 slope &amp; clamp values in the right ballpark, or
+    do you want more / less dramatic change?</li>
+  <li>For 3D mobile: keep the new 1-px base (subtle shrink) or
+    restore 2-px base (more visible shrink curve)?</li>
+  <li>Drop the integer <code>round</code> for smoother sub-pixel
+    transitions, or keep it (sharper but quantized)?</li>
+</ol>
+
+</body>
+</html>
