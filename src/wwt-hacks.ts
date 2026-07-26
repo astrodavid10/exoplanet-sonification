@@ -11,6 +11,14 @@ import {
 } from "@wwtelescope/engine";
 
 import { drawExoplanetCloud, isExoplanetLayerName } from "./exoplanet-renderer";
+// === Galaxy3D v3 === hybrid Milky Way (texture volume slices + sprite clouds).
+// The h=0 base slice replaces WWT's own galaxy-image quad; drawGalaxyImage below
+// hands off to it when the ensemble is active, else falls back to the original
+// quad + _patchGalaxyVertexBuffer path. See src/galaxy3d.ts.
+import { drawGalaxyEnsemble, ensembleHandlesBasePlane } from "./galaxy3d";
+// Shared Milky Way frame (unit scale, GC offset, angular scale, rotation
+// chain) — see the _patchGalaxyVertexBuffer comment below.
+import { MW_ANGLE_SCALE, imageUnitsToWorld, obliquityRad } from "./galaxy-frame";
 
 // ── Constellation figure fade ─────────────────────────────────────────────────
 // WWT's SimpleLineShader hardcodes alpha=1 for sky lines. We patch it once here
@@ -464,18 +472,21 @@ export function drawSpreadSheetLayer(renderContext, opacity, flat) {
 // Stock values: FADE_ZERO = 17.9, FADE_RANGE = 2.3
 const MW_FADE_ZERO   = 18.6;  // ← raise to fade out sooner when zooming in
 const MW_FADE_RANGE  = 2.3;   // ← widen for a softer fade
-// MW_ANGLE_SCALE expands the ±64° lat/lng quad extents built by _createGalaxyImage.
-// The camera sits at the origin so world-matrix scaling has no angular effect;
-// we instead rebuild the GL vertex buffer with a larger angular footprint.
-const MW_ANGLE_SCALE = 1.05;  // ← increase to make the galaxy image larger
+// MW_ANGLE_SCALE (expands the ±64° lat/lng quad extents built by
+// _createGalaxyImage) and the unit scale + rotation chain below all live in
+// galaxy-frame.ts. The camera sits at the origin so world-matrix scaling has
+// no angular effect; we instead rebuild the GL vertex buffer with a larger
+// angular footprint. Importing rather than re-declaring keeps this quad and
+// the Galaxy3D volume slices on ONE definition of the frame — they previously
+// carried independent copies of MW_ANGLE_SCALE, the 60800000 unit scale, and
+// the four-rotation chain, so changing one silently desynced the other.
 
 let _galaxyVertexBufferPatched = false;
 
 function _patchGalaxyVertexBuffer(renderContext) {
   if (!Grids._galaxyImageVertexBuffer) return;
   const subdivs     = 50;
-  const scaleFactor = 60800000;
-  const ecliptic    = Coordinates.meanObliquityOfEcliptic(SpaceTimeController.get_jNow()) / 180 * Math.PI;
+  const ecliptic    = obliquityRad();
   const step        = 1 / subdivs;
   const data        = new Float32Array((subdivs + 1) * (subdivs + 1) * 5);
   for (let y1 = 0; y1 <= subdivs; y1++) {
@@ -484,11 +495,10 @@ function _patchGalaxyVertexBuffer(renderContext) {
     const lat = (-64 + 128 * (y1 < subdivs ? y1 : subdivs) * step) * MW_ANGLE_SCALE;
     for (let x1 = 0; x1 <= subdivs; x1++) {
       const lng = (-64 + 128 * (x1 < subdivs ? x1 : subdivs) * step) * MW_ANGLE_SCALE;
-      const pt  = Vector3d.create(lng * scaleFactor, 0, (lat - 28) * scaleFactor);
-      pt.rotateY( 213           / 180 * Math.PI);
-      pt.rotateZ((-62.87175)    / 180 * Math.PI);
-      pt.rotateY((-192.8595083) / 180 * Math.PI);
-      pt.rotateX(ecliptic);
+      // imageUnitsToWorld applies (lng, height, lat − GC_OFFSET_UNITS) · MW_UNIT_AU
+      // then rotY(213°)·rotZ(−62.87175°)·rotY(−192.8595083°)·rotX(ε) — exactly
+      // the chain that used to be inlined here.
+      const pt  = imageUnitsToWorld(lng, lat, 0, ecliptic);
       const vi = (y1 * (subdivs + 1) + x1) * 5;
       data[vi]     = pt.x;
       data[vi + 1] = pt.y;
@@ -508,10 +518,19 @@ export function drawGalaxyImage(renderContext, _opacity) {
   const zoom    = renderContext.viewCamera.zoom;
   const opacity = Math.min(1, Math.max(0, (Math.log(zoom) - MW_FADE_ZERO) / MW_FADE_RANGE));
   if (opacity > 0) {
-    _origDrawGalaxyImage.call(this, renderContext, opacity);
-    if (!_galaxyVertexBufferPatched && Grids._galaxyImageVertexBuffer) {
-      _patchGalaxyVertexBuffer(renderContext);
-      _galaxyVertexBufferPatched = true;
+    if (ensembleHandlesBasePlane()) {
+      // Galaxy3D v3 stack: vignetted h=0 base plane (replaces WWT's square
+      // quad) + volume slices + sprite clouds, under the same zoom-fade
+      // opacity. Cheap no-op until the Gaia texture has streamed in.
+      drawGalaxyEnsemble(renderContext, opacity);
+    } else {
+      // Fallback (kill switch / shader link failure): WWT's original quad,
+      // widened to the MW_ANGLE_SCALE footprint by _patchGalaxyVertexBuffer.
+      _origDrawGalaxyImage.call(this, renderContext, opacity);
+      if (!_galaxyVertexBufferPatched && Grids._galaxyImageVertexBuffer) {
+        _patchGalaxyVertexBuffer(renderContext);
+        _galaxyVertexBufferPatched = true;
+      }
     }
   }
 }
