@@ -206,7 +206,7 @@ The `point-testing-3d` reference harness (rectangular layer with `set_xAxisColum
 **Hover/reticle sonification**: hovering a planet (desktop) or ringing one in the reticle (mobile) shows the info popover **and plays its orbital-period tone** — this is what both in-app help entries promise. `updateLastClosePoint` fires the tone inside its existing `needsUpdate` branch.
 
 Two guards matter and neither is optional:
-- **`HOVER_TONE_MIN_MS` (120 ms) rate limit**, tracked via `lastHoverToneMs`. The `needsUpdate` check alone is not enough: in the Kepler/TESS clumps the *nearest* planet changes on nearly every animation frame while panning, which would fire a note per frame.
+- **`HOVER_TONE_MIN_MS` (60 ms, ~16/sec) rate limit**, tracked via `lastHoverToneMs`. The `needsUpdate` check alone is not enough: in the Kepler/TESS clumps the *nearest* planet changes on nearly every animation frame while panning, which would fire a note per frame. This is tuned close to the useful floor — much lower and it approaches one note per frame, where it stops reading as music and the overlapping 450 ms ping rings smear together.
 - **`!this.isPlaying`** — timeline playback owns the audio while it runs.
 
 Hover plays at `HOVER_TONE_GAIN` (0.26), deliberately below `BASE_TONE_GAIN` (0.42) used by search selection and playback, so incidental hover sits under explicit actions.

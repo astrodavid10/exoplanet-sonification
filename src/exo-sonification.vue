@@ -593,14 +593,18 @@ const BASE_TONE_GAIN = 0.42;
 // under the explicit actions rather than compete with them.
 const HOVER_TONE_GAIN = 0.26;
 
-// Minimum gap between two hover-driven tones. updateLastClosePoint only fires
-// when the identified planet actually *changes*, but in a dense field (the
-// Kepler/TESS clumps are thousands of dots inside a few degrees) a single pan
-// changes the nearest planet on nearly every animation frame. Without this
-// floor that machine-guns a note per frame. 120 ms lets a deliberate hover
-// ring out one planet at a time while a fast sweep plays a sparse arpeggio
-// instead of a burst.
-const HOVER_TONE_MIN_MS = 120;
+// Minimum gap between two hover-driven tones/pings. updateLastClosePoint only
+// fires when the identified planet actually *changes*, but in a dense field
+// (the Kepler/TESS clumps are thousands of dots inside a few degrees) a single
+// pan changes the nearest planet on nearly every animation frame. Without this
+// floor that machine-guns a note per frame.
+//
+// 60 ms (~16/sec) is the deliberate ceiling: fast enough that sweeping a dense
+// field reads as a run of notes rather than a stutter, while still well above
+// the per-frame rate a 60 Hz pan would otherwise produce. Lowering it further
+// approaches one note per frame, which is where it stops sounding musical and
+// the overlapping 450 ms ping rings start to smear together.
+const HOVER_TONE_MIN_MS = 60;
 
 // Parsec → AU. Used to feed real exoplanet distances into raDecTo3dAu so the
 // 3D-mode ping projection picks up the correct WWT world-space direction.
