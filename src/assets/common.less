@@ -484,3 +484,10 @@ video {
   right: calc((3em - 0.6875em) / 3); /* font-awesome-icons have width 0.6875em */
   color: white;
 }
+
+/* Kiosk mode (museum touchscreen). Class toggled by src/kiosk.ts. */
+body.kiosk-mode {
+  overscroll-behavior: none;     /* kill pull-to-refresh / rubber-band */
+  -webkit-touch-callout: none;   /* kill long-press callout */
+  /* optional for touch-only installs: * { cursor: none !important; } */
+}

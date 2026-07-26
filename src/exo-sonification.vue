@@ -51,6 +51,10 @@
           Overview
         </li>
 
+        <li class="hamb-menu-items" @click="startTuningFork">
+          <i class="fas fa-music"></i> Solar System Tuning Fork
+        </li>
+
         <li class="hamb-menu-items" @click="toggleSearch">
           <i class="fas fa-search"></i> Search Exoplanets
         </li>
@@ -67,24 +71,29 @@
           Constellations {{ showConstellations ? '(on)' : '(off)' }}
         </li>
 
-        <li class="hamb-menu-items" @click="openLink('https://www.rocketcenter.com/INTUITIVEPlanetarium/InteractiveAstronomy')">
+        <li class="hamb-menu-items" @click="openLink('https://www.rocketcenter.com/INTUITIVEPlanetarium/InteractiveAstronomy', 'INTUITIVE Planetarium')">
           <i class="fas fa-solid fa-rocket"></i>
           <i> INTUITIVE</i><sup>®</sup>
           Planetarium
         </li>
 
-        <li class="hamb-menu-items" @click="openLink('https://worldwidetelescope.org/')">
+        <li class="hamb-menu-items" @click="openLink('https://worldwidetelescope.org/', 'WorldWide Telescope')">
           <img alt="WWT Logo" src="./assets/logo_wwt.png" width="18" height="18" style="vertical-align: middle;"/>
           WorldWide Telescope
         </li>
 
-        <li class="hamb-menu-items" @click="openLink('https://exoplanetarchive.ipac.caltech.edu/')">
+        <li class="hamb-menu-items" @click="openLink('https://exoplanetarchive.ipac.caltech.edu/', 'NASA Exoplanet Archive')">
           <img alt="NASA" src="https://upload.wikimedia.org/wikipedia/commons/e/e5/NASA_logo.svg" width="22" height="22" style="vertical-align: middle;"/>
           Exoplanet Archive
         </li>
 
+        <li v-if="kioskMode" class="hamb-menu-items" @click="showHomeQR">
+          <i class="fas fa-mobile-alt"></i>
+          Take it with you
+        </li>
+
       </ul>
-    </div>  
+    </div>
 
       <!-- This is the intro text -->
       <transition name="intro-fade">
@@ -141,6 +150,10 @@
               <div class="intro-how-to">
                 <h2 class="intro-section-title">How to Use</h2>
                 <ul class="intro-instructions">
+                  <li>
+                    <span class="intro-icon"><i class="fas fa-bullseye"></i></span>
+                    <span><strong>Tuning Fork:</strong> New here? Try <em>Solar System Tuning Fork</em> (on the splash screen or the menu). It flies you into the solar system and plays each planet and dwarf planet's orbital-period tone from the inside out, so you learn what fast and slow orbits sound like. Afterward you can replay it, hear the compact <em>TRAPPIST-1</em> system, or hear <em>one popular exoplanet per note</em>.</span>
+                  </li>
                   <li>
                     <span class="intro-icon"><i class="fas fa-music"></i></span>
                     <span><strong>Sonify:</strong> Press <em>Play</em> to hear exoplanet discoveries unfold through time — each planet's orbital period maps to a guitar note. Higher-pitched notes correspond to shorter orbital periods (fast orbits close to their star); lower-pitched notes correspond to longer orbital periods (slow orbits farther out). Single-click plays from the current year; double-click (or when the timeline is at the end) restarts from 1992.</span>
@@ -210,9 +223,14 @@
               </transition>
             </div><!-- /.intro-body-wrap -->
 
-            <button class="intro-modal-cta" @click="closeIntro">
-              Start Exploring <i class="fas fa-rocket" style="margin-left: 0.4em;"></i>
-            </button>
+            <div class="intro-cta-row">
+              <button class="intro-modal-cta intro-cta-tuning" @click="startTuningFork">
+                <i class="fas fa-music" style="margin-right: 0.4em;"></i> Solar System Tuning Fork
+              </button>
+              <button class="intro-modal-cta" @click="closeIntro">
+                Start Exploring <i class="fas fa-rocket" style="margin-left: 0.4em;"></i>
+              </button>
+            </div>
 
           </div><!-- /.intro-modal -->
         </div><!-- /.intro-backdrop -->
@@ -260,6 +278,46 @@
         :style="{ left: ping.x + 'px', top: ping.y + 'px', '--ping-color': ping.color }"
       ></div>
     </div>
+
+    <!-- === Tuning Fork === orbit/body overlay, name popover, title, exit + menu -->
+    <canvas v-show="tfActive" ref="tfCanvas" class="tf-canvas"></canvas>
+    <!-- Body name popover: styled + positioned to match the hover identify popup. -->
+    <div
+      v-if="tfActive && tfLabelVisible"
+      id="tf-popover"
+      :style="{ '--current-color': tfLabelColor }"
+    >
+      <div class="popover-name">{{ tfLabel }}</div>
+      <div class="popover-details" v-if="tfLabelDetail">{{ tfLabelDetail }}</div>
+    </div>
+    <div v-if="tfActive && tfTitle" class="tf-title">{{ tfTitle }}</div>
+    <button v-if="tfActive && !tfMenuOpen" class="tf-exit-btn" @click="exitTuningFork">
+      <i class="fas fa-times"></i> Exit
+    </button>
+
+    <transition name="intro-fade">
+      <div v-if="tfMenuOpen" class="tf-menu-backdrop">
+        <div class="tf-menu">
+          <h2 class="tf-menu-title">Tuning Fork</h2>
+          <p class="tf-menu-sub">Calibrate your ear, then choose where to go next.</p>
+          <button class="tf-menu-btn" @click="runSolarDemo">
+            <i class="fas fa-globe"></i> Solar System
+            <span class="tf-menu-hint">{{ tfMenuHint('solar') }}</span>
+          </button>
+          <button class="tf-menu-btn" @click="runTrappistDemo">
+            <i class="fas fa-circle" style="color:#ff5a32;"></i> TRAPPIST-1 System
+            <span class="tf-menu-hint">{{ tfMenuHint('trappist') }}</span>
+          </button>
+          <button class="tf-menu-btn" @click="runPerNoteDemo">
+            <i class="fas fa-music"></i> One Planet Per Note
+            <span class="tf-menu-hint">{{ tfMenuHint('pernote') }}</span>
+          </button>
+          <button class="tf-menu-btn tf-menu-explore" @click="exitTuningFork">
+            <i class="fas fa-rocket"></i> Explore the Exoplanets
+          </button>
+        </div>
+      </div>
+    </transition>
 
     <!-- Reticle toggle button: 2D-only (sonification is disabled in 3D). -->
     <div v-if="mobile && modeReactive !== '3D'" class="reticle-toggle-wrap">
@@ -403,20 +461,21 @@
   </template>
 </div>
 
-    <!-- QR Code Modal (reserved for kiosk/linkless mode)
-    <transition name="fade">
-      <div class="qr-modal" v-if="showQRCode" @click="closeQR">
-        <div class="qr-container" @click.stop>
-          <div class="close-qr" @click="closeQR">
-            <i class="fas fa-times"></i>
-          </div>
-          <h3>{{ currentQRTitle }}</h3>
-          <qrcode-vue :value="currentQRUrl" :size="200" level="H"></qrcode-vue>
-          <p>Scan to visit website</p>
-        </div>
-      </div>
-    </transition>
-    -->
+    <!-- Kiosk-only "take it home" pill: a QR of the public URL so a guest can
+         continue exploring on their own phone. Bottom-left, clear of the
+         catalog button (top-left) and mode/hamburger controls (top-right). -->
+    <button v-if="kioskMode" class="kiosk-home-btn" @click="showHomeQR">
+      <i class="fas fa-mobile-alt"></i> Take it with you
+    </button>
+
+    <!-- Attract-mode "still here?" hint, shown only while the kiosk tour is
+         auto-cycling exoplanets after an idle timeout. -->
+    <div class="kiosk-hint" v-if="attractMode" aria-hidden="true">Touch to explore</div>
+
+    <!-- Kiosk QR modal: shown instead of navigating away on any external link,
+         and for the "take it home" pill. NOT teleported — stays inside #app so
+         the --accent-color custom properties (set in cssVars) resolve. -->
+    <kiosk-qr-modal v-if="showQrModal" :url="qrUrl" :title="qrTitle" @close="closeQR" />
 
   </div>
   </v-app>
@@ -428,14 +487,16 @@ import { csvFormatRows, csvParse } from "d3-dsv";
 import { Color, Constellations, Coordinates, Folder, Grids, Layer, LayerManager, RenderContext, Settings, SpreadSheetLayer, Texture, WWTControl } from "@wwtelescope/engine"; //Grids, Poly
 import { AltTypes, AltUnits, MarkerScales, PlotTypes, RAUnits, Thumbnail } from "@wwtelescope/engine-types"; //ImageSetType, PointScaleTypes
 import { GotoRADecZoomParams } from "@wwtelescope/engine-pinia";
-import L, { Map } from "leaflet"; //LeafletMouseEvent
 import { tween } from "femtotween";
 import { MiniDSBase, BackgroundImageset, skyBackgroundImagesets } from "@cosmicds/vue-toolkit";
 import { ImageSetLayer, Place } from "@wwtelescope/engine"; //Imageset
 import { applyImageSetLayerSetting } from "@wwtelescope/engine-helpers";
 import { drawSkyOverlays, initializeConstellationNames, drawSpreadSheetLayer, layerManagerDraw, drawGalaxyImage, zoom, setConstellationFiguresTarget, notifyConstellationModeChange, prebuildFigures3D, gotoTargetFullHacked } from "./wwt-hacks"; //makeAltAzGridText
-// === Galaxy3D === (procedural 3D Milky Way, see src/galaxy3d.ts)
+// === Galaxy3D === (hybrid 3D Milky Way: texture volume slices + sprite clouds,
+// see src/galaxy3d.ts). installGalaxy3D() is now an API-compat no-op — the
+// ensemble hooks inside wwt-hacks.ts:drawGalaxyImage.
 import { installGalaxy3D } from "./galaxy3d";
+import { prewarmGalaxySprites } from "./galaxy-sprites";
 // === ExoplanetCloud === custom WebGL renderer (step 1: dot pass).
 // A/B-test toggle: window.__cloudDots = true in the browser console.
 import {
@@ -447,6 +508,18 @@ import {
   setSearchRing as cloudSetSearchRing,
   clearSearchRing as cloudClearSearchRing,
 } from "./exoplanet-renderer";
+// === Tuning Fork === orbital-period demos for the solar system, TRAPPIST-1,
+// and one popular exoplanet per note. See src/tuningForkData.ts.
+import {
+  SOLAR_SYSTEM_BODIES,
+  TRAPPIST_BODIES,
+  ONE_PER_NOTE_BODIES,
+  eclipticPositionAU,
+  orbitSampleVerticesAU,
+  maxOrbitRadiusAU,
+  julianDateNow,
+} from "./tuningForkData";
+import type { TFBody } from "./tuningForkData";
 
 //applySpreadSheetLayerSetting
 
@@ -461,7 +534,15 @@ import {
   transit,
 } from "./exoplanetData";
 
-// import qrcodeVue from 'qrcode.vue'; // reserved for kiosk mode
+// === Kiosk mode === museum-touchscreen behavior (see KIOSK_MODE.md in the
+// sibling JWST repo for the full recipe this was ported from).
+import KioskQrModal from "./KioskQrModal.vue";
+import {
+  installKioskGuards, scheduleDailyReload, createIdleWatcher, IdleWatcher,
+  KIOSK_RELOAD_HOUR, KIOSK_IDLE_MS, KIOSK_ATTRACT_DWELL_MS, KIOSK_ATTRACT_FALLBACK_STEP_MS,
+} from "./kiosk";
+import { urlWithoutParams, numberParam } from "./urlParams";
+import { statsInit, statsSessionStart, statsSessionEnd, statsTrack } from "./kioskStats";
 
 
 
@@ -503,9 +584,23 @@ const LOG_PERIOD_HI = Math.log(PERIOD_HI_DAYS);
 // Per-voice base gain. Timeline playback bins planets by pitch and sums into
 // one voice per bin at gain = BASE_TONE_GAIN * sqrt(count) (see
 // handlePointTransitions), so the worst-case voice count is bounded by the
-// number of distinct samples (NOTES_HIGH_TO_LOW.length = 20). Hover/search
-// fire a single voice at BASE_TONE_GAIN.
+// number of distinct samples (NOTES_HIGH_TO_LOW.length = 20). Search fires a
+// single voice at BASE_TONE_GAIN.
 const BASE_TONE_GAIN = 0.42;
+
+// Hover/reticle identify sonification. Deliberately quieter than a search
+// selection: hover fires incidentally as the cursor sweeps, so it should sit
+// under the explicit actions rather than compete with them.
+const HOVER_TONE_GAIN = 0.26;
+
+// Minimum gap between two hover-driven tones. updateLastClosePoint only fires
+// when the identified planet actually *changes*, but in a dense field (the
+// Kepler/TESS clumps are thousands of dots inside a few degrees) a single pan
+// changes the nearest planet on nearly every animation frame. Without this
+// floor that machine-guns a note per frame. 120 ms lets a deliberate hover
+// ring out one planet at a time while a fast sweep plays a sparse arpeggio
+// instead of a burst.
+const HOVER_TONE_MIN_MS = 120;
 
 // Parsec → AU. Used to feed real exoplanet distances into raDecTo3dAu so the
 // 3D-mode ping projection picks up the correct WWT world-space direction.
@@ -518,6 +613,55 @@ const PARSEC_TO_AU = 206264.806;
 // the X axis. The engine recomputes obliquity from jNow each frame, but it
 // drifts < 0.01° per century — a fixed J2000 value is accurate enough.
 const ECLIPTIC_RAD = 23.4392911 * Math.PI / 180;
+
+// === Tuning Fork === activation colour (matches the "Start Exploring" CTA blue)
+// and animation timing. Each demo zooms into the solar-system view, then reveals
+// bodies inside-out — each ping + tone + colour flip is TF_REVEAL_INTERVAL_MS
+// apart. The sim clock advances from the current date at TF_TIME_SCALE so the
+// inner orbits visibly revolve (Earth ≈ one lap per 6 s).
+const TUNING_FORK_BLUE = "#2a7adb";
+const TF_REVEAL_INTERVAL_MS = 1000; //780
+const TF_TIME_SCALE_DAYS_PER_SEC = 5; // 365.25/6
+const TF_SLEW_SEC = 3.2;                 // camera zoom-in before reveals start
+const TF_SLEW_MS = TF_SLEW_SEC * 1000 + 250;
+const TF_MENU_DELAY_MS = 1800;           // pause after last reveal before the menu
+
+// Zoom-out framing: the demo starts zoomed in on the inner orbits, then pulls
+// back as ONE smooth continuous camera motion (time-parameterised, smootherstep
+// eased) over the reveal window, ending with every orbit framed — not a per-
+// reveal step-and-settle. zoom = (9/4)·radius·TF_FRAME_FACTOR (camera distance =
+// radius·TF_FRAME_FACTOR). TF_START_FRACTION sets the initial framing as a
+// fraction of the outermost orbit (larger = start further out / less zoomed in).
+const TF_FRAME_FACTOR = 3.0;     // camera distance as a multiple of the framed orbit radius
+const TF_START_FRACTION = 0.22;  // initial framing radius = TF_START_FRACTION · maxRadius
+
+// Aspect compensation for TF_FRAME_FACTOR. WWT's solar-system projection is
+// perspectiveFovLH(_fovLocal, width/height, …) with _fovLocal fixed at π/4
+// (RenderContext, engine index.js:47038) — i.e. the 45° FOV is *vertical*, and
+// the horizontal FOV narrows as the viewport gets taller than it is wide. An
+// orbit of radius R at camera distance D fits vertically when
+// D > R/tan(22.5°) = 2.414·R, and horizontally when D > 2.414·R·(h/w).
+//
+// TF_FRAME_FACTOR = 3.0 clears the vertical bound with ~24% margin, which is
+// why desktop 16:9 always looked right — but a portrait phone (390×844) needs
+// 5.22·R, so the demo was framing at 57% of the required distance and clipping
+// every orbit left and right. Scaling by max(1, h/w) makes the framing correct
+// on any aspect and is a no-op on landscape.
+function tfAspectPad(): number {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (!(w > 0) || !(h > 0)) { return 1; }
+  return Math.max(1, h / w);
+}
+
+// Per-demo runtime wrapper: the static orbit path (ecliptic-AU vertices, built
+// once) plus its activation state and the colour it flips to when sonified.
+interface TFRuntime {
+  body: TFBody;
+  orbit: [number, number, number][];
+  color: string;       // colour once activated
+  activated: boolean;
+}
 
 function pitchIndexForPeriod(plOrbper: number, n: number): number {
   if (!Number.isFinite(plOrbper) || plOrbper <= 0) return 0;
@@ -702,9 +846,28 @@ const ALL_POINTS_3D: Hit3DRow[] = (() => {
 // references; ALL_POINTS_3D was .map()'d from ALL_POINTS so its indexing
 // matches index-for-index. This lookup turns any p ∈ ALL_POINTS into the
 // renderer rowIndex needed by cloudStartPing / cloudSetSearchRing.
-// (globalThis.Map because Leaflet's non-generic Map shadows the built-in.)
-const ROW_INDEX_OF = new globalThis.Map<typeof ALL_POINTS[number], number>();
+const ROW_INDEX_OF = new Map<typeof ALL_POINTS[number], number>();
 ALL_POINTS.forEach((p, i) => ROW_INDEX_OF.set(p, i));
+
+// === Kiosk mode === attract-loop source: the same 20 recognizable exoplanets
+// used by the "One Planet Per Note" tuning-fork demo (periods/discovery
+// methods "verified against src/exoplanetData.ts" per tuningForkData.ts), so
+// their names resolve exactly against ALL_POINTS. Curated + a manageable size
+// beats a random shuffle of all ~6000 catalog rows for a museum tour.
+const KIOSK_ATTRACT_POOL: typeof ALL_POINTS = ONE_PER_NOTE_BODIES
+  .map((body) => ALL_POINTS.find((p) => p.name === body.name))
+  .filter((p): p is typeof ALL_POINTS[number] => p !== undefined);
+
+// Fisher–Yates shuffle (returns a new array). Used to randomize the kiosk
+// attract loop's visit order each cycle.
+function shuffled<T>(arr: readonly T[]): T[] {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
 type Table = typeof DATA_TABLES[144]; //IDK
 
@@ -820,7 +983,7 @@ function catKey(cat: string | undefined | null): string {
 
 export default defineComponent({
   components: {
-    // qrcodeVue, // reserved for kiosk mode
+    "kiosk-qr-modal": KioskQrModal,
   },
 
   extends: MiniDSBase,
@@ -874,7 +1037,14 @@ export default defineComponent({
           zoomDeg: 289555092.0 * 6
         };
       }
-    }    
+    },
+    // Kiosk mode (museum touchscreen): external links open a QR modal instead
+    // of navigating, the intro is skipped, idle time triggers an attract loop,
+    // local-only stats. Turned on by ?kiosk=1 (see src/main.ts / src/urlParams.ts).
+    kioskMode: { type: Boolean, default: false },
+    // Canonical public URL for the take-home QR (set at deploy time; "" derives
+    // it from the current URL minus kiosk params).
+    kioskHomeUrl: { type: String, default: "" },
   },
   data()  {
     const initial2DPosition = {
@@ -1011,8 +1181,6 @@ export default defineComponent({
       currentTool: "crossfade" as ToolType, //"choose-background" as ToolType,
       tab: 0,
 
-      circle: null as L.Circle | null,
-      map: null as Map | null,
 
       selectionProximity: 4,
       pointerMoveThreshold: 6,
@@ -1025,9 +1193,31 @@ export default defineComponent({
       pendingHoverEvent: null as PointerEvent | null,
       hoverRafId: null as number | null,
 
-      showQRCode: false,
-      currentQRUrl: '',
-      currentQRTitle: '',
+      // Timestamp of the last hover-driven tone, for the HOVER_TONE_MIN_MS
+      // rate limit in updateLastClosePoint.
+      lastHoverToneMs: 0,
+
+      // Kiosk QR modal (external links + take-home QR route here in kiosk mode).
+      showQrModal: false,
+      qrUrl: "",
+      qrTitle: "",
+      // Teardown fns for kiosk guards/watchers, run in beforeUnmount.
+      kioskCleanups: [] as Array<() => void>,
+      // Attract loop (auto-cycles curated exoplanets in 3D after idle; guest
+      // touch stops it).
+      attractMode: false,
+      // True during enterAttract's 3 s settle, before attractMode flips. Guards
+      // both re-entry into enterAttract and guest touches in that window.
+      attractPending: false,
+      attractTimer: 0,
+      attractOrder: [] as (typeof ALL_POINTS),
+      attractIdx: 0,
+      // Duration of the last attract slew (gotoExoplanet3D's fixed-duration
+      // gotoTargetFullHacked call), so the loop can pace its next step to land
+      // after the fly-in settles.
+      lastSlewMs: 0,
+      // The idle watcher (kept so stats can read its lastActivity timestamp).
+      kioskIdleWatcher: null as IdleWatcher | null,
       reticleEnabled: true,
       showSkyPicker: false,
       pings: [] as { id: number; x: number; y: number; color: string }[],
@@ -1043,12 +1233,87 @@ export default defineComponent({
       popupPinned: false,
       popupPinSnapshot: null as { raRad: number; decRad: number; zoomDeg: number } | null,
       popupPinTimer: null as ReturnType<typeof setTimeout> | null,
+
+      // === Tuning Fork === demo state (see startTuningFork / _tfTick).
+      tfActive: false,
+      tfMode: null as null | "solar" | "trappist" | "pernote",
+      // Demos played this session, so the next-steps menu can label the one
+      // that just ran as a replay and the untried ones as new (see tfMenuHint).
+      tfSeen: [] as ("solar" | "trappist" | "pernote")[],
+      tfMenuOpen: false,
+      tfTitle: "",
+      tfStarColor: "#ffe08a",
+      tfBodies: [] as TFRuntime[],
+      tfRafId: null as number | null,
+      tfLoopStartMs: 0,
+      tfRevealBaseMs: 0,
+      tfSimStartJD: 0,
+      tfRevealIndex: -1,
+      tfLabelIndex: -1,
+      tfLabel: "",
+      tfLabelColor: TUNING_FORK_BLUE,
+      tfLabelDetail: "",
+      tfLabelVisible: false,
+      tfTargetZoom: 0,           // zoom we're easing toward (see _tfTick zoom-out)
+      tfStartZoom: 0,            // initial (closest) framing — zoom never goes below this
+      tfMaxRadiusAU: 0,          // outermost orbit radius; re-framed on resize (_tfRefitFraming)
+      tfCanvasW: 0,
+      tfCanvasH: 0,
+      tfResizeHandler: null as null | (() => void),
     };
   },
 
   mounted() {
     this.currentMonthIndex = this.totalMonths - 1;
     document.addEventListener('pointerdown', this._ensureAudio, { once: true });
+
+    // Kiosk mode (museum touchscreen): lock the browser down and route
+    // external links to a QR modal. Installed synchronously (before the async
+    // waitForReady() chain below finishes) so the exhibit is guarded even
+    // while WWT/imagery are still loading.
+    if (this.kioskMode) {
+      // Skip the intro entirely. The "Overview" hamburger item can still
+      // reopen it on demand.
+      this.showIntro = false;
+
+      // Anonymous, local-only usage stats (viewable via ?kioskStats=1).
+      // statsInit owns a flush interval plus pagehide/visibilitychange
+      // listeners; hold its teardown so a remount (dev HMR, or beforeUnmount)
+      // doesn't stack a second set.
+      this.kioskCleanups.push(statsInit(this.kioskMode));
+
+      this.kioskCleanups.push(installKioskGuards({
+        onExternalLink: (url, title) => this.showQR(url, title),
+      }));
+      // Nightly maintenance reload only while attract is running (no guest sees it).
+      this.kioskCleanups.push(scheduleDailyReload(KIOSK_RELOAD_HOUR, () => this.attractMode));
+
+      window.addEventListener("keydown", this.onKioskKeydown);
+      this.kioskCleanups.push(() => window.removeEventListener("keydown", this.onKioskKeydown));
+
+      // Idle → attract loop. ?kioskIdle=<seconds> overrides the default for testing.
+      const idleOverrideS = numberParam("kioskIdle");
+      const idleMs = (idleOverrideS !== null && idleOverrideS > 0) ? idleOverrideS * 1000 : KIOSK_IDLE_MS;
+      const watcher = createIdleWatcher({
+        idleMs,
+        onIdle: () => this.enterAttract(),
+        onActive: () => this.onKioskActivity(),
+        onTap: () => statsTrack("tap"),
+      });
+      watcher.start();
+      this.kioskIdleWatcher = watcher;
+      this.kioskCleanups.push(() => watcher.stop());
+    }
+
+    // The intro modal shows on load (showIntro defaults true), but the showIntro
+    // watcher only fires on change — so seed the scroll-hint state now so the
+    // "scroll down" hint appears immediately. Re-check after layout settles and
+    // once images/fonts (which grow scrollHeight) have loaded.
+    if (this.showIntro) {
+      this.$nextTick(() => this.onIntroBodyScroll());
+      setTimeout(() => this.onIntroBodyScroll(), 400);
+      window.addEventListener('load', () => this.onIntroBodyScroll(), { once: true });
+    }
 
     this.waitForReady().then(async () => {
       this.backgroundImagesets = [...skyBackgroundImagesets];
@@ -1119,11 +1384,6 @@ export default defineComponent({
       /*EXOPLANET GENERATION STARTS HERE!*/
 
       // Ensure all checkboxes are on by default
-      // Initialize all catalog checkboxes (single source of truth)
-      Object.keys(DATA_STRINGS).forEach(cat => {
-        console.log("layersOn initialized for:", cat); // <-- added
-      });
-
       // Single array to hold the created layers
       const tableLayerPromises: Promise<Layer>[] = [];
 
@@ -1132,10 +1392,7 @@ export default defineComponent({
 
       // Create one layer per catalog (no merging)
       Object.entries(DATA_STRINGS).forEach(([cat, csvString], _index) => {
-        console.log("Processing catalog:", cat); // <-- added
-
         if (!this.layersOn[cat]) {
-          console.log("  Skipping because layersOn is false");
           return;
         }
 
@@ -1184,20 +1441,6 @@ export default defineComponent({
             layer.set_endDateColumn(7);   // end_date column
 
             layer.set_markerScale(MarkerScales.screen);
-
-            console.log(
-              "Layer:", cat,
-              "Start column:", layer.get_startDateColumn(),
-              "End column:", layer.get_endDateColumn(),
-              "Time series:", layer.get_timeSeries(),
-              "Dynamic:", layer.get_dynamicData()
-            );
-
-            // Optional: inspect first few rows after 2 seconds
-            setTimeout(() => {
-              const data = layer.getTableDataInView();
-              console.log("  Points count:", data.split("\r\n").length - 1); // <-- added
-            }, 2000);
 
             return layer;
           })
@@ -1311,10 +1554,25 @@ export default defineComponent({
       // @ts-expect-error -- monkey-patching WWT Grids with custom drawGalaxyImage
       Grids.drawGalaxyImage = drawGalaxyImage;
 
-      // === Galaxy3D === Replace the 2D-bar patch above with the 3D point cloud
-      // in solar-system (3D) mode. To remove this feature: delete this block,
-      // delete the matching import at the top, and delete src/galaxy3d.ts.
+      // === Galaxy3D === v3 hybrid Milky Way. installGalaxy3D() is an API-compat
+      // no-op: the ensemble (slices + sprites) is invoked from wwt-hacks.ts's
+      // drawGalaxyImage patch installed just above. To remove this feature:
+      // delete this block, the matching imports at the top, and src/galaxy3d.ts.
       installGalaxy3D();
+      // Pre-run the galaxy sprite atlas paint + structure build (pure canvas/
+      // math, no GL) so the first 3D draw only has to upload buffers/textures
+      // instead of stalling on procedural noise synthesis. buildGalaxyAtlas
+      // paints 8 cells of fbm noise — on desktop that's 512×512×8 pixels at up
+      // to 4 octaves each, ~1.4M valueNoise evaluations in one synchronous task.
+      //
+      // The JWST original scheduled this via requestIdleCallback because that
+      // app starts in 2D and has seconds of idle before 3D is reachable. This
+      // app starts in 3D (`let mode = "3D"` at module scope), so an idle
+      // callback can easily lose the race against the Gaia texture load above —
+      // and then the whole paint runs lazily *inside* the first render frame,
+      // during startup, competing with the catalog upload. Run it on a macrotask
+      // instead: off the mount critical path, but before the first 3D draw.
+      setTimeout(() => prewarmGalaxySprites(), 0);
 
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore
@@ -1474,12 +1732,25 @@ export default defineComponent({
         '--color-default': this.colorD,
         '--color-default2': this.colorWhite,
         '--app-content-height': this.showTextSheet ? '66%' : '100%',
+        // Kiosk mode (KioskQrModal.vue + take-home pill): exo's blue chrome
+        // accent, matching the #1671e0 borders used throughout this file's
+        // buttons/menus, with #4a9eff (already used for sky-picker hover) as
+        // the brighter hover/active accent.
+        '--accent-color': '#1671e0',
+        '--accent-color2': '#4a9eff',
       };
 
       for (const [index, color] of Object.entries(this.colors)) {
         css[`--color${index}`] = color;
       }
       return css;
+    },
+    // Kiosk "take it home" QR target: kioskHomeUrl (set before museum install);
+    // otherwise derive it from the current URL with the kiosk params stripped.
+    // utm_source=kiosk lets analytics distinguish exhibit-driven traffic.
+    homeUrl(): string {
+      const base = this.kioskHomeUrl || urlWithoutParams("kiosk", "kioskIdle", "kioskStats");
+      return base + (base.includes("?") ? "&" : "?") + "utm_source=kiosk";
     },
     popoverCssVars() {
       const x = this.lastClosePt?.x ?? 0;
@@ -1659,6 +1930,11 @@ export default defineComponent({
     },
 
 
+    // Console-invoked layer inspector (window.app.logLayerData("transit")).
+    // Same class of tool as the window.__pingDebug knob in spawnPing3D: it has
+    // no callers in the app and exists purely to be typed into DevTools, so
+    // its console output is intentional rather than leftover debugging.
+    /* eslint-disable no-console */
     logLayerData(kind: string) {
       const layer = this.layers[kind];
       if (!layer?.getTableDataInView) {
@@ -1684,6 +1960,7 @@ export default defineComponent({
         );
       });
     },
+    /* eslint-enable no-console */
 
     getSliderDate(): Date {
     // compute the year/month from the currentMonthIndex
@@ -1720,7 +1997,7 @@ export default defineComponent({
       // at gain = BASE_TONE_GAIN * sqrt(count). sqrt is acoustic-power flat
       // (perceptual loudness scales sub-linearly with amplitude), and worst
       // case voice count is ≤ 20, no stagger needed.
-      const bins = new globalThis.Map<number, number>();
+      const bins = new Map<number, number>();
       for (const p of newThisMonth) {
         const v = Number(p.plOrbper);
         if (!Number.isFinite(v) || v <= 0) continue;
@@ -2264,6 +2541,8 @@ export default defineComponent({
     },
 
     updateLastClosePoint(event: PointerEvent, overridePoint?: { x: number; y: number }, overrideProximity?: number): void {
+      // A tuning-fork demo owns the popover; don't let hover/reticle clobber it.
+      if (this.tfActive) return;
       // Keep the searched planet's popup visible until the user actually moves
       // the camera (handled by the wwt position watchers, not hover).
       if (this.popupPinned) return;
@@ -2280,23 +2559,17 @@ export default defineComponent({
         this.lastClosePt.dec != closestPt.dec;
       if (needsUpdate) {
         this.lastClosePt = closestPt;
-        // Play hover sound when the closest point under the cursor changes
-        if (closestPt) {
-          if (!this.isPlaying) {
-            try {
-              if (Number.isFinite(closestPt.plOrbper) && closestPt.plOrbper > 0) {
-                this.playPointTone?.(closestPt.plOrbper);
-              }
-              const color = colorForCat(closestPt.cat);
-              console.log(color);
-              if (this.modeReactive === '2D') {
-                this.spawnPing(closestPt.ra * R2D, closestPt.dec * R2D, color);
-              } else {
-                this.spawnPing3D(closestPt.ra * R2D, closestPt.dec * R2D, Number(closestPt.gdist), color);
-              }
-            } catch (e) {
-              // ignore
-            }
+        // Hover/reticle sonifies the planet under the cursor (desktop hover and
+        // the mobile reticle both land here). Rate-limited by HOVER_TONE_MIN_MS
+        // because in a dense field the nearest planet changes almost every
+        // frame while panning. Timeline playback owns the audio while it runs.
+        if (closestPt != null && !this.isPlaying) {
+          const now = performance.now();
+          const period = closestPt.plOrbper;
+          if (now - this.lastHoverToneMs >= HOVER_TONE_MIN_MS &&
+              Number.isFinite(period) && period > 0) {
+            this.lastHoverToneMs = now;
+            this.playPointTone(period, HOVER_TONE_GAIN);
           }
         }
       }
@@ -2311,15 +2584,6 @@ export default defineComponent({
       return Math.min(fovW, fovH);
     },
     
-    /*circleForLocation(latDeg: number, lonDeg: number): L.Circle<any> {
-      return L.circle([latDeg, lonDeg], {
-        color: "#FF0000",
-        fillColor: "#FF0033",
-        fillOpacity: 0.5,
-        radius: 200
-      });
-    },*/
-
     /* Toggles the hamburger menu when the hamburger icon is clicked */
     toggleMenu() {
       this.isMenuOpen = !this.isMenuOpen;
@@ -2418,11 +2682,20 @@ export default defineComponent({
 
     selectSearchResult(pt: typeof ALL_POINTS[number] | undefined) {
       if (!pt) return;
+      // Kiosk usage stats: only guest-initiated selections count (the attract
+      // loop calls this same method to drive its tour, so it must not inflate
+      // the numbers — statsTrack also no-ops once the kiosk session is closed,
+      // this is belt-and-braces on top of that).
+      if (!this.attractMode) { statsTrack("select", pt.name); }
       this.searchResults = [];
       this.searchQuery = pt.name;
       const is3D = this.modeReactive === '3D';
       if (is3D) {
         this.gotoExoplanet3D(pt);
+        // gotoExoplanet3D always slews via gotoTargetFullHacked(..., 3) — a
+        // fixed 3s duration — so the kiosk attract loop can pace its next
+        // step off of it instead of guessing.
+        this.lastSlewMs = 3000;
       } else {
         // CINEMATIC 2D SEARCH SLEW — to revert, swap the two lines below.
         // gotoRADecZoomCinematic(this.wwtControl, pt.ra / 15, pt.dec, 8);
@@ -2621,6 +2894,358 @@ export default defineComponent({
       gotoTargetFullHacked(this.wwtControl, false, false, params, fg, bg, 3);
     },
 
+    // =================================================================
+    // === Tuning Fork === orbital-period demos (solar / TRAPPIST / per-note)
+    // =================================================================
+
+    // Entry point from the splash button and hamburger menu.
+    startTuningFork() {
+      this.showIntro = false;
+      this.isMenuOpen = false;
+      this.runSolarDemo();
+    },
+    runSolarDemo() { this._beginDemo("solar"); },
+    runTrappistDemo() { this._beginDemo("trappist"); },
+    runPerNoteDemo() { this._beginDemo("pernote"); },
+
+    // Label for a next-steps menu entry. Derived from tfMode/tfSeen rather than
+    // hardcoded, so whichever demo just finished is the one marked "(replay)"
+    // and only genuinely untried demos read as "(new)".
+    tfMenuHint(which: "solar" | "trappist" | "pernote"): string {
+      if (this.tfMode === which) { return "(replay)"; }
+      return this.tfSeen.includes(which) ? "(again)" : "(new)";
+    },
+
+    _beginDemo(which: "solar" | "trappist" | "pernote") {
+      // Kiosk usage stats: a guest choosing a tuning-fork demo is a signature
+      // interaction (statsTrack already no-ops with no open kiosk session).
+      statsTrack("tuningFork");
+      this._tfStopLoop();
+      this.tfMenuOpen = false;
+      this.tfMode = which;
+      if (!this.tfSeen.includes(which)) { this.tfSeen.push(which); }
+
+      let src: TFBody[];
+      if (which === "trappist") {
+        src = TRAPPIST_BODIES;
+        this.tfTitle = "TRAPPIST-1 System";
+        this.tfStarColor = "#ff5a32"; // ultracool red-dwarf host
+      } else if (which === "pernote") {
+        src = ONE_PER_NOTE_BODIES;
+        this.tfTitle = "One Popular Planet Per Note";
+        this.tfStarColor = "#ffe08a";
+      } else {
+        src = SOLAR_SYSTEM_BODIES;
+        this.tfTitle = "Our Solar System";
+        this.tfStarColor = "#ffe08a";
+      }
+
+      // Per-body runtime: static orbit path + the colour it flips to once
+      // sonified. Solar bodies flip to the CTA blue; exoplanet demos flip to
+      // their discovery-method colour.
+      this.tfBodies = src.map((body) => ({
+        body,
+        orbit: orbitSampleVerticesAU(body),
+        color: which === "solar" ? TUNING_FORK_BLUE : colorForCat(body.cat),
+        activated: false,
+      }));
+      this.tfRevealIndex = -1;
+      this.tfLabelIndex = -1;
+      this.tfLabelVisible = false;
+      this.tfActive = true;
+      // Focused-demo chrome: collapse the Discovery Types menu while a demo runs
+      // (restored in _tfHardStop). Keeps the top-left clear for the Exit button.
+      this.showCatalog = false;
+      this.showCatalogButton = false;
+
+      const maxR = maxOrbitRadiusAU(src);
+      this.$nextTick(() => {
+        this._tfSetupCanvas();
+        const go = () => { this._tfEnterView(maxR); this._tfStartLoop(); };
+        if (this.modeReactive !== "3D") {
+          this.modeReactive = "3D"; // watcher runs set3DMode; we re-slew below
+          setTimeout(go, 450);
+        } else {
+          go();
+        }
+      });
+    },
+
+    _tfEnterView(maxRadiusAU: number) {
+      // The exoplanet-navigation clamp (minZoom) keeps you ~13000 AU out, far
+      // too far to see tens-of-AU orbits. Temporarily allow close zoom; restored
+      // in _tfHardStop. Lowered to 1 so we can frame the innermost orbit tightly.
+      WWTControl.singleton.setSolarSystemMinZoom(1);
+      // Hide WWT's own Sun/planet sprites — we draw our own star + bodies so we
+      // control the star colour (red for TRAPPIST-1A) and the inside-out reveal.
+      this.applySetting(["solarSystemPlanets", false]);
+
+      // Remember the radius so _tfRefitFraming can re-derive the zooms if the
+      // viewport changes shape mid-demo (phone rotation).
+      this.tfMaxRadiusAU = maxRadiusAU;
+      this._tfRefitFraming();
+      const startZoom = this.tfStartZoom;
+
+      const rc = this.wwtRenderContext;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const params: any = rc.viewCamera.copy();
+      params.zoom = startZoom;
+      // Top-down on the ecliptic. In this engine version
+      // getScreenPointForCoordinates() does NO arg swap in solar-system mode
+      // (Vector3d.create(x, y, z), engine index.js:68289), so our ecliptic-AU
+      // orbits lie in the world XY plane (z≈0) and the ecliptic pole is the
+      // world +Z axis. setupMatricesSolarSystem builds the camera at
+      // viewAdjust·(0,0,camDist); lat=lng=0 leaves it on +Z looking straight
+      // down the pole (face-on rings). rotation=0 keeps a stable, upright frame.
+      // (lat=90 would put the camera on the world Y axis → edge-on.)
+      params.lat = 0;
+      params.lng = 0;
+      params.rotation = 0;
+      params.angle = 0;
+      params.target = 20; // SolarSystemObjects.custom — preserve our viewTarget
+      params.targetReferenceFrame = "";
+      params.viewTarget.x = 0;
+      params.viewTarget.y = 0;
+      params.viewTarget.z = 0;
+      const fg = rc.get_foregroundImageset();
+      const bg = rc.get_backgroundImageset();
+      gotoTargetFullHacked(this.wwtControl, false, false, params, fg, bg, TF_SLEW_SEC);
+    },
+
+    // Derive tfStartZoom / tfTargetZoom from the framed radius and the current
+    // viewport aspect. Split out of _tfEnterView so a resize (phone rotation)
+    // can re-fit without re-slewing: _tfTick reads both fields every frame, so
+    // updating them in place makes the pull-back continue against the new
+    // framing rather than stranding orbits off-screen.
+    _tfRefitFraming() {
+      const maxRadiusAU = this.tfMaxRadiusAU;
+      if (!(maxRadiusAU > 0)) { return; }
+      const frameFactor = TF_FRAME_FACTOR * tfAspectPad();
+      // End-of-demo framing (all orbits in view); the zoom-out in _tfTick eases
+      // toward this as outer bodies are revealed.
+      this.tfTargetZoom = (9 / 4) * Math.max(2.5, maxRadiusAU * frameFactor);
+      // Start zoomed in on the inner orbits, then slowly pull back (see _tfTick).
+      this.tfStartZoom = (9 / 4) * Math.max(2.5, maxRadiusAU * TF_START_FRACTION * frameFactor);
+    },
+
+    _tfSetupCanvas() {
+      const cv = this.$refs.tfCanvas as HTMLCanvasElement | undefined;
+      if (!cv) return;
+      const dpr = window.devicePixelRatio || 1;
+      this.tfCanvasW = window.innerWidth;
+      this.tfCanvasH = window.innerHeight;
+      cv.width = Math.round(this.tfCanvasW * dpr);
+      cv.height = Math.round(this.tfCanvasH * dpr);
+      cv.style.width = this.tfCanvasW + "px";
+      cv.style.height = this.tfCanvasH + "px";
+      const ctx = cv.getContext("2d");
+      if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (!this.tfResizeHandler) {
+        this.tfResizeHandler = () => {
+          this._tfSetupCanvas();
+          // Aspect may have flipped (portrait ↔ landscape) — re-fit the zoom
+          // framing so the orbits stay inside the narrower axis.
+          this._tfRefitFraming();
+        };
+        window.addEventListener("resize", this.tfResizeHandler);
+      }
+    },
+
+    _tfStartLoop() {
+      this.tfLoopStartMs = performance.now();
+      this.tfRevealBaseMs = this.tfLoopStartMs + TF_SLEW_MS;
+      this.tfSimStartJD = julianDateNow();
+      const frame = () => {
+        if (!this.tfActive) return;
+        this._tfTick();
+        this.tfRafId = requestAnimationFrame(frame);
+      };
+      this.tfRafId = requestAnimationFrame(frame);
+    },
+
+    _tfStopLoop() {
+      if (this.tfRafId != null) {
+        cancelAnimationFrame(this.tfRafId);
+        this.tfRafId = null;
+      }
+    },
+
+    _tfSimJD(now: number): number {
+      return this.tfSimStartJD + ((now - this.tfLoopStartMs) / 1000) * TF_TIME_SCALE_DAYS_PER_SEC;
+    },
+
+    // Heliocentric ecliptic AU -> screen pixels. In this engine version
+    // getScreenPointForCoordinates() does NO arg swap in solar-system mode
+    // (Vector3d.create(x, y, z), engine index.js:68289), so the world vertex is
+    // exactly (xe, ye, ze) and the orbital plane is the world XY plane (z≈0).
+    _tfProject(xe: number, ye: number, ze: number): { x: number; y: number } | null {
+      const s = WWTControl.singleton.getScreenPointForCoordinates(xe, ye, ze);
+      if (!s || !Number.isFinite(s.x) || !Number.isFinite(s.y)) return null;
+      if (s.x < -2000 || s.x > this.tfCanvasW + 2000 ||
+          s.y < -2000 || s.y > this.tfCanvasH + 2000) return null;
+      return { x: s.x, y: s.y };
+    },
+
+    _tfActivate(i: number, simJD: number) {
+      const rt = this.tfBodies[i];
+      if (!rt) return;
+      rt.activated = true;
+      this.tfLabelIndex = i;
+      // Name popover, styled + positioned like the hover identify popup.
+      this.tfLabel = rt.body.name;
+      this.tfLabelColor = rt.color;
+      const period = rt.body.periodDays;
+      const periodStr = Number.isFinite(period) && period > 0
+        ? `${period.toFixed(1)} day orbit` : "";
+      this.tfLabelDetail = rt.body.cat
+        ? [rt.body.cat, periodStr].filter(Boolean).join(", ")
+        : periodStr;
+      this.tfLabelVisible = true;
+      // Ping fires on the body itself.
+      const pos = eclipticPositionAU(rt.body, simJD);
+      const scr = this._tfProject(pos[0], pos[1], pos[2]);
+      if (scr) {
+        const id = ++this.pingId;
+        this.pings.push({ id, x: scr.x, y: scr.y, color: rt.color });
+        setTimeout(() => {
+          const idx = this.pings.findIndex((p) => p.id === id);
+          if (idx !== -1) this.pings.splice(idx, 1);
+        }, 450);
+      }
+      // Same orbital-period -> pitch mapping as the exoplanet sonification.
+      this.playPointTone(rt.body.periodDays);
+    },
+
+    _tfTick() {
+      const now = performance.now();
+      const simJD = this._tfSimJD(now);
+
+      if (now >= this.tfRevealBaseMs && this.tfRevealIndex < this.tfBodies.length - 1) {
+        const want = Math.floor((now - this.tfRevealBaseMs) / TF_REVEAL_INTERVAL_MS);
+        const target = Math.min(want, this.tfBodies.length - 1);
+        while (this.tfRevealIndex < target) {
+          this.tfRevealIndex++;
+          this._tfActivate(this.tfRevealIndex, simJD);
+        }
+      }
+
+      // Once reveals begin (slew finished), pull the camera back as ONE smooth
+      // continuous motion: zoom is a pure function of elapsed time across the
+      // reveal window (start framing -> all-orbits framing), smootherstep-eased
+      // so it glides out steadily rather than stepping per reveal.
+      if (now >= this.tfRevealBaseMs) {
+        const span = Math.max(1, this.tfBodies.length - 1) * TF_REVEAL_INTERVAL_MS;
+        const t = Math.min(1, Math.max(0, (now - this.tfRevealBaseMs) / span));
+        const s = t * t * t * (t * (t * 6 - 15) + 10); // smootherstep
+        const zoom = this.tfStartZoom + (this.tfTargetZoom - this.tfStartZoom) * s;
+        const rc = this.wwtRenderContext;
+        if (rc && rc.viewCamera) {
+          rc.viewCamera.zoom = zoom;
+        }
+      }
+
+      this._tfDraw(simJD);
+
+      // After the final reveal + a short beat, surface the next-steps menu.
+      if (this.tfRevealIndex >= this.tfBodies.length - 1 && !this.tfMenuOpen) {
+        const doneAt = this.tfRevealBaseMs + this.tfBodies.length * TF_REVEAL_INTERVAL_MS;
+        if (now > doneAt + TF_MENU_DELAY_MS) this.tfMenuOpen = true;
+      }
+    },
+
+    _tfDraw(simJD: number) {
+      const cv = this.$refs.tfCanvas as HTMLCanvasElement | undefined;
+      if (!cv) return;
+      const ctx = cv.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, this.tfCanvasW, this.tfCanvasH);
+
+      // Orbit paths (under the bodies).
+      for (const rt of this.tfBodies) {
+        ctx.beginPath();
+        let started = false;
+        for (const v of rt.orbit) {
+          const p = this._tfProject(v[0], v[1], v[2]);
+          if (!p) { started = false; continue; }
+          if (!started) { ctx.moveTo(p.x, p.y); started = true; }
+          else ctx.lineTo(p.x, p.y);
+        }
+        if (rt.activated) {
+          ctx.strokeStyle = rt.color;
+          ctx.globalAlpha = 0.95;
+          ctx.lineWidth = 2;
+        } else {
+          ctx.strokeStyle = "#ffffff";
+          ctx.globalAlpha = 0.5;
+          ctx.lineWidth = 1.1;
+        }
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+
+      // Central star.
+      const s0 = this._tfProject(0, 0, 0);
+      if (s0) {
+        const r = 14;
+        const g = ctx.createRadialGradient(s0.x, s0.y, 0, s0.x, s0.y, r);
+        g.addColorStop(0, "#ffffff");
+        g.addColorStop(0.4, this.tfStarColor);
+        g.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(s0.x, s0.y, r, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+
+      // Bodies (all orbit from the start; colour flips on activation).
+      for (const rt of this.tfBodies) {
+        const pos = eclipticPositionAU(rt.body, simJD);
+        const p = this._tfProject(pos[0], pos[1], pos[2]);
+        if (!p) continue;
+        if (rt.activated) {
+          ctx.fillStyle = rt.color;
+          ctx.shadowColor = rt.color;
+          ctx.shadowBlur = 8;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 5, 0, 2 * Math.PI);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        } else {
+          ctx.fillStyle = "#ffffff";
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 3.2, 0, 2 * Math.PI);
+          ctx.fill();
+        }
+      }
+    },
+
+    exitTuningFork() {
+      this._tfHardStop();
+      this.set3DMode(); // back to the normal exoplanet 3D view
+    },
+
+    // Stop the loop + overlay and restore engine state WITHOUT moving the camera
+    // (shared by exit and the mode-switch guard in the modeReactive watcher).
+    _tfHardStop() {
+      this._tfStopLoop();
+      if (this.tfResizeHandler) {
+        window.removeEventListener("resize", this.tfResizeHandler);
+        this.tfResizeHandler = null;
+      }
+      this.tfActive = false;
+      this.tfMenuOpen = false;
+      this.tfMode = null;
+      this.tfLabelVisible = false;
+      this.tfBodies = [];
+      this.tfRevealIndex = -1;
+      this.tfLabelIndex = -1;
+      // Restore the Discovery Types chrome collapsed for the demo.
+      this.showCatalog = true;
+      this.showCatalogButton = true;
+      WWTControl.singleton.setSolarSystemMinZoom(this.minZoom);
+      this.applySetting(["solarSystemPlanets", true]);
+    },
+
     clearSearch() {
       this.searchQuery = '';
       this.searchResults = [];
@@ -2716,19 +3341,18 @@ export default defineComponent({
         ...pos,
         instant: false
       }).catch((err) => {
-        console.log(err);
+        console.error(err);
       });
-      
-      
+
+
     },
-    
+
     shinkWWT(aspect: number = null as unknown as number) {
       // default aspect = 5.7
       if (aspect == null) {
         aspect = 5.7;
       }
-      console.log('shinkWWT');
-      
+
       const mainContent = document.querySelector(".wwtelescope-component") as HTMLElement;
       const width = mainContent.clientWidth;
       const height = width / aspect;
@@ -2827,20 +3451,118 @@ export default defineComponent({
     },*/ //WWW
 		
 
-    openLink(url: string) {
+    // In kiosk mode, external links must not navigate the browser away from
+    // the exhibit — show a QR the guest can scan on their phone instead.
+    // Otherwise open a real new tab. `label` becomes the QR modal title.
+    openLink(url: string, label = "") {
+      if (this.kioskMode) { this.showQR(url, label); this.isMenuOpen = false; return; }
       window.open(url, '_blank', 'noopener,noreferrer');
       this.isMenuOpen = false;
     },
 
-    showQRForLink(url: string, title: string) {
-      this.currentQRUrl = url;
-      this.currentQRTitle = title;
-      this.showQRCode = true;
+    // Open the kiosk QR modal for `url`. Closes the hamburger menu so it
+    // doesn't sit under the backdrop.
+    showQR(url: string, title = "") {
+      this.qrUrl = url;
+      this.qrTitle = title;
+      this.showQrModal = true;
       this.isMenuOpen = false;
+      statsTrack("qr", url);
+    },
+    closeQR() {
+      this.showQrModal = false;
     },
 
-    closeQR() {
-      this.showQRCode = false;
+    // "Take it with you" — QR of the public site URL so a guest can continue
+    // exploring on their phone.
+    showHomeQR() {
+      this.showQR(this.homeUrl, "Take it with you");
+      statsTrack("takeHome");
+    },
+
+    // Escape closes the kiosk QR modal (no other global keydown handling
+    // exists in this app, so this is installed/removed only in kiosk mode).
+    onKioskKeydown(ev: KeyboardEvent) {
+      if (ev.key === "Escape" && this.showQrModal) { this.closeQR(); }
+    },
+
+    // ── Kiosk attract loop ─────────────────────────────────────────────────
+    // Entered on idle: reset to the app's clean default (3D) view, then
+    // auto-cycle a curated set of exoplanets.
+    enterAttract() {
+      // Re-entrancy guard. The idle watcher's pointermove handler clears its
+      // own `idle` flag without calling onActive, so a hovering hand or a
+      // nudged mouse during the tour lets onIdle fire a SECOND time — which
+      // re-ran resetKioskView (a jarring mid-tour camera re-home) and
+      // overwrote attractTimer, orphaning the in-flight attractNext step.
+      if (this.attractMode || this.attractPending) { return; }
+
+      // The session ends at the guest's LAST activity, not when the idle timer
+      // fired, so the idle tail isn't counted as dwell.
+      statsSessionEnd(this.kioskIdleWatcher?.lastActivityTs() ?? Date.now());
+      this.resetKioskView();
+      // 3 s settle lets set3DMode's deferred camera move finish before the
+      // first attract step, so they don't fight. attractPending covers this
+      // window: attractMode is still false, so without it a guest who touches
+      // during these 3 s was not protected and the tour launched on top of them.
+      this.attractPending = true;
+      this.attractTimer = window.setTimeout(() => {
+        this.attractPending = false;
+        this.attractMode = true;
+        this.attractOrder = shuffled(KIOSK_ATTRACT_POOL);
+        this.attractIdx = 0;
+        this.attractNext();
+      }, 3000);
+    },
+
+    // Return the viewer to a clean, default state before the tour begins:
+    // demos exited, playback stopped, menus/search closed, back in 3D (the
+    // app's default landing mode — see `let mode = "3D"` at module scope).
+    resetKioskView() {
+      this.closeQR();
+      this.isMenuOpen = false;
+      this.showSearch = false;
+      this.clearSearch();
+      this.showSkyPicker = false;
+      this.showBgButton = false;
+      const wasInTuningFork = this.tfActive;
+      if (wasInTuningFork) { this.exitTuningFork(); } // exits the demo AND calls set3DMode()
+      if (this.isPlaying) { this.stopPlay(); }
+      this.currentTool = 'crossfade';
+      this.showCatalog = true;
+      this.showCatalogButton = true;
+      if (this.modeReactive !== '3D') {
+        this.modeReactive = '3D'; // watcher runs set3DMode()
+      } else if (!wasInTuningFork) {
+        this.set3DMode(); // re-home the camera even when already in 3D
+      }
+    },
+
+    // Fly to the next curated exoplanet (3D, cinematic slew + tone + ping via
+    // selectSearchResult) and schedule the step after.
+    attractNext() {
+      if (!this.attractMode || this.attractOrder.length === 0) { return; }
+      const pt = this.attractOrder[this.attractIdx % this.attractOrder.length];
+      this.attractIdx += 1;
+      this.selectSearchResult(pt);
+      const stepMs = (this.lastSlewMs || KIOSK_ATTRACT_FALLBACK_STEP_MS) + KIOSK_ATTRACT_DWELL_MS;
+      this.attractTimer = window.setTimeout(() => this.attractNext(), stepMs);
+    },
+
+    stopAttract() {
+      window.clearTimeout(this.attractTimer);
+      this.attractMode = false;
+      this.attractPending = false;
+      // Deliberately do NOT reset the view: the guest starts where the tour left them.
+    },
+
+    // Any genuine guest activity while attract is running — or during the 3 s
+    // settle before it starts — stops the tour.
+    onKioskActivity() {
+      if (this.attractMode || this.attractPending) { this.stopAttract(); }
+      // Start a session on the first interaction after load OR after an
+      // attract reset. Idempotent while a session is already open.
+      statsSessionStart();
     },
   },
 
@@ -2910,6 +3632,16 @@ export default defineComponent({
     
     modeReactive(newVal, oldVal) {
       mode = newVal;
+      // Kiosk usage stats: only a guest-driven switch into 3D counts (the
+      // attract loop's resetKioskView also forces 3D — statsTrack already
+      // no-ops with no open session, this attractMode guard is belt-and-braces).
+      if (newVal === '3D' && oldVal !== '3D' && !this.attractMode) { statsTrack("mode3d"); }
+      // A tuning-fork demo is 3D-only; if anything switches to 2D mid-demo,
+      // tear the overlay down and restore engine state. (Switching *into* 3D is
+      // how a demo starts, so don't fire on newVal === "3D".)
+      if (this.tfActive && newVal !== "3D") {
+        this._tfHardStop();
+      }
       // Clear any lingering hover/reticle selection so a stale planet label
       // from the previous mode doesn't persist after switching.
       if (newVal !== oldVal) {
@@ -2982,6 +3714,23 @@ export default defineComponent({
       cancelAnimationFrame(this.hoverRafId);
       this.hoverRafId = null;
     }
+    // Unmounting mid-demo used to leak the tuning-fork rAF loop and its window
+    // resize listener, which were only torn down by exitTuningFork. _tfHardStop
+    // does both (plus restores minZoom and WWT's planet sprites). Guarded on
+    // tfActive because it touches the engine, which may already be torn down.
+    if (this.tfActive) { this._tfHardStop(); } else { this._tfStopLoop(); }
+    if (this.tfResizeHandler) {
+      window.removeEventListener("resize", this.tfResizeHandler);
+      this.tfResizeHandler = null;
+    }
+    if (this.popupPinTimer) {
+      clearTimeout(this.popupPinTimer);
+      this.popupPinTimer = null;
+    }
+    // Undo kiosk guards/watchers (restores window.open, removes listeners, etc.).
+    window.clearTimeout(this.attractTimer);
+    for (const fn of this.kioskCleanups) { fn(); }
+    this.kioskCleanups = [];
   }
 });
 
@@ -3776,6 +4525,136 @@ body {
   mix-blend-mode: screen;
 }
 
+/* === Tuning Fork overlay === */
+.intro-cta-row {
+  display: flex;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+}
+.intro-cta-tuning {
+  background: linear-gradient(90deg, #6b3fa0, #b14ad8);
+}
+.tf-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 18; /* just under .ping-layer (20) so activation pings sit on top */
+}
+/* Body name popover: mirrors #circle-popover so it matches the hover identify
+   popup (same bottom-centre spot, same colouring via --current-color). */
+#tf-popover {
+  background-color: var(--color-default);
+  color: var(--current-color);
+  border: solid 1px var(--current-color);
+  border-radius: 10px;
+  position: fixed;
+  bottom: 10rem;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(340px, 85vw);
+  padding: 6px 14px;
+  font-size: 0.85em;
+  z-index: 22;
+  pointer-events: none;
+  text-align: center;
+}
+/* Title styled like the rest of the app chrome (catalog/center-buttons chip),
+   sitting in the top row between the Exit button (left) and hamburger (right). */
+.tf-title {
+  position: absolute;
+  top: 0.8rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  background: var(--color-default);
+  border: solid 1px #1671e07c;
+  color: rgb(227, 227, 227);
+  border-radius: 10px;
+  height: 2rem;
+  line-height: calc(2rem - 2px);
+  padding: 0 1rem;
+  max-width: min(60vw, 22rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Roboto;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+/* Exit button: top-left (catalog is hidden during a demo) so it never overlaps
+   the hamburger (top-right) on mobile or desktop. Styled like .catalog-button. */
+.tf-exit-btn {
+  position: absolute;
+  top: 0.8rem;
+  left: 0.5rem;
+  z-index: 40;
+  background: var(--color-default);
+  color: rgb(227, 227, 227);
+  border: solid 1px #1671e07c;
+  border-radius: 10px;
+  height: 2rem;
+  padding: 0 0.9rem;
+  font-family: Roboto;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.tf-exit-btn:hover { box-shadow: 0 0 3px 2px #1671e07c; }
+.tf-menu-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 260;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 18, 0.55);
+  backdrop-filter: blur(2px);
+}
+.tf-menu {
+  background: rgba(16, 22, 40, 0.96);
+  border: 1px solid rgba(120, 150, 220, 0.35);
+  border-radius: 14px;
+  padding: 1.6rem 1.8rem 1.8rem;
+  width: min(92vw, 360px);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  text-align: center;
+}
+.tf-menu-title { margin: 0 0 0.2rem; color: #fff; font-size: 1.4rem; }
+.tf-menu-sub { margin: 0 0 1.2rem; color: #b9c4e0; font-size: 0.9rem; }
+.tf-menu-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  margin: 0.5rem 0;
+  padding: 0.7rem 1rem;
+  background: rgba(42, 122, 219, 0.16);
+  border: 1px solid rgba(120, 150, 220, 0.35);
+  border-radius: 9px;
+  color: #eaf0ff;
+  font-size: 0.98rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, filter 0.15s;
+}
+.tf-menu-btn:hover { background: rgba(42, 122, 219, 0.32); }
+.tf-menu-btn i { width: 1.2em; text-align: center; }
+.tf-menu-hint { color: #9fb0d6; font-weight: 400; font-size: 0.85em; }
+.tf-menu-explore {
+  margin-top: 1rem;
+  background: linear-gradient(90deg, #1a5fb0, #2a7adb);
+  border-color: transparent;
+}
+.tf-menu-explore:hover {
+  filter: brightness(1.12);
+  background: linear-gradient(90deg, #1a5fb0, #2a7adb);
+}
+
 .search-overlay {
   position: absolute;
   top: 6rem;
@@ -3982,51 +4861,62 @@ body {
 .sky-picker-dropdown::-webkit-scrollbar-track { background: transparent; }
 .sky-picker-dropdown::-webkit-scrollbar-thumb { background: #2a7adb60; border-radius: 2px; }
 
-/* ── QR code modal ──────────────────────────────────────────── */
-.qr-modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.72);
+/* ── Kiosk mode ──────────────────────────────────────────────── */
+/* The QR modal itself lives in KioskQrModal.vue (--accent-color / --accent-color2
+   are supplied by cssVars above). These two are the app-chrome-styled trigger
+   button and the attract-mode hint. */
+
+/* "Take it home" pill — bottom-left, clear of .catalog-button (top-left) and
+   the mode/hamburger controls (top-right). Kiosk-only. */
+.kiosk-home-btn {
+  position: absolute;
+  bottom: 0.6rem;
+  left: 0.8rem;
+  z-index: 9;
+  padding: 0.45rem 0.85rem;
+  border-radius: 8px;
+  background: var(--color-default);
+  border: solid 1px #1671e07c;
+  color: rgb(227, 227, 227);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
   display: flex;
   align-items: center;
-  justify-content: center;
-  z-index: 100;
+  gap: 0.45rem;
+  transition: box-shadow 150ms ease, color 150ms ease;
+}
+.kiosk-home-btn:hover {
+  color: #4a9eff;
+  box-shadow: 0 0 8px 2px #1671e07c;
 }
 
-.qr-container {
-  position: relative;
-  background: var(--color-default);
-  border: 1px solid #1671e07c;
-  border-radius: 12px;
-  padding: 2rem 2.5rem;
-  text-align: center;
-  color: rgb(227, 227, 227);
-  box-shadow: 0 0 24px rgba(22, 113, 224, 0.3);
-
-  h3 {
-    margin-bottom: 1rem;
-    font-size: 1.05rem;
-    font-weight: 600;
-  }
-
-  p {
-    margin-top: 0.8rem;
-    font-size: 0.8rem;
-    opacity: 0.65;
-  }
-}
-
-.close-qr {
+/* Attract-mode "still here?" hint — pulsing, bottom-center, non-interactive. */
+.kiosk-hint {
   position: absolute;
-  top: 0.6rem;
-  right: 0.9rem;
-  cursor: pointer;
-  font-size: 1.1rem;
-  opacity: 0.6;
+  bottom: 14%;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 20;
+  padding: 0.55rem 1.2rem;
+  border-radius: 999px;
+  background: var(--color-default);
+  border: solid 1px #1671e07c;
   color: rgb(227, 227, 227);
-  transition: opacity 0.15s;
-
-  &:hover { opacity: 1; }
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow: 0 0 8px 2px #1671e07c;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .kiosk-hint {
+    animation: kiosk-pulse 2.4s ease-in-out infinite;
+  }
+}
+@keyframes kiosk-pulse {
+  0%, 100% { opacity: 0.65; transform: translateX(-50%) scale(1); }
+  50% { opacity: 1; transform: translateX(-50%) scale(1.05); }
 }
 
 #splash-close {

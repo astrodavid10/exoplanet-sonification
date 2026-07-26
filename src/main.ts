@@ -2,8 +2,10 @@ import Vue, { createApp } from "vue";
 
 import { FundingAcknowledgment, IconButton, CreditLogos, wwtHUD } from "@cosmicds/vue-toolkit";
 import exoSonification from "./exo-sonification.vue";
+import KioskStatsPanel from "./KioskStatsPanel.vue";
 import TransitionExpand from "./TransitionExpand.vue";
 import TransitionExpandTwo from "./TransitionExpandTwo.vue";
+import { boolParam } from "./urlParams";
 import "./assets/common.less";
 
 import vuetify from "../plugins/vuetify";
@@ -40,50 +42,63 @@ library.add(faVideo);
 // Extract the function out, up here, so I'm not writing it twice
 const update = (el: HTMLElement, binding: Vue.DirectiveBinding) => el.style.visibility = (binding.value) ? "hidden" : "";
 
-createApp(exoSonification, {
-  wwtNamespace: "wwt-minids-exo-sonification",
-  wtml: { // images are listed in chronological order earliest to latest
-    gammaraypulsar: "https://data1.wwtassets.org/packages/2023/04_gammaray/grb_backgrounds.wtml",
-  },
-  //url: "https://web.wwtassets.org/specials/2023/cosmicds-carina/",
-  //thumbnailUrl: "https://cdn.worldwidetelescope.org/thumbnails/jwst.jpg",
-  bgWtml: "https://data1.wwtassets.org/packages/2023/04_gammaray/grb_backgrounds.wtml",
-  //fgName: "PLANCK R2 HFI color composition 353-545-857 GHz", //"Fermi LAT 8-year (gamma)",
-  bgName: "Deep Star Maps 2020", //"Eckhard All Sky",
-  introTitle: "Exoplanet Sonification",
-  introText: `zzz`,
-})
- 
-  // Plugins
-  .use(wwtPinia)
-  .use(vuetify)
+// ?kioskStats=1 → mount the standalone usage-stats panel instead of the
+// exoplanet viewer (no engine/pinia/vuetify boot needed). See kioskStats.ts.
+if (boolParam("kioskStats")) {
+  createApp(KioskStatsPanel).mount("#app");
+} else {
+  createApp(exoSonification, {
+    wwtNamespace: "wwt-minids-exo-sonification",
+    wtml: { // images are listed in chronological order earliest to latest
+      gammaraypulsar: "https://data1.wwtassets.org/packages/2023/04_gammaray/grb_backgrounds.wtml",
+    },
+    //url: "https://web.wwtassets.org/specials/2023/cosmicds-carina/",
+    //thumbnailUrl: "https://cdn.worldwidetelescope.org/thumbnails/jwst.jpg",
+    bgWtml: "https://data1.wwtassets.org/packages/2023/04_gammaray/grb_backgrounds.wtml",
+    //fgName: "PLANCK R2 HFI color composition 353-545-857 GHz", //"Fermi LAT 8-year (gamma)",
+    bgName: "Deep Star Maps 2020", //"Eckhard All Sky",
+    introTitle: "Exoplanet Sonification",
+    introText: "",
+    // Kiosk mode (museum touchscreen): turned on by ?kiosk=1.
+    kioskMode: boolParam("kiosk"),
+    // Canonical public URL for the take-home QR code shown in kiosk mode.
+    // Must be absolute: an empty value falls back to deriving it from the
+    // current URL, which on an exhibit machine is a localhost/LAN address the
+    // guest's phone cannot reach.
+    kioskHomeUrl: "https://projects.cosmicds.cfa.harvard.edu/exoplanet-sonification/",
+  })
 
-  // Directives
-  .directive(
-    /**
-    * Hides an HTML element, keeping the space it would have used if it were visible (css: Visibility)
-    */
-    "hide", {
-      // Run on initialisation (first render) of the directive on the element
-      beforeMount(el, binding, _vnode, _prevVnode) {
-        update(el, binding);
-      },
-      // Run on subsequent updates to the value supplied to the directive
-      updated(el, binding, _vnode, _prevVnode) {
-        update(el, binding);
-      }
-    })
+    // Plugins
+    .use(wwtPinia)
+    .use(vuetify)
 
-  // Components
-  .component("WorldWideTelescope", WWTComponent)
-  .component('font-awesome-icon', FontAwesomeIcon)
-  .component('vue-slider', VueSlider)
-  .component('transition-expand', TransitionExpand)
-  .component('transition-expand-two', TransitionExpandTwo)
-  .component('icon-button', IconButton)
-  .component('funding-acknowledgement', FundingAcknowledgment)
-  .component('credit-logos', CreditLogos)
-  .component('wwt-hud', wwtHUD)
+    // Directives
+    .directive(
+      /**
+      * Hides an HTML element, keeping the space it would have used if it were visible (css: Visibility)
+      */
+      "hide", {
+        // Run on initialisation (first render) of the directive on the element
+        beforeMount(el, binding, _vnode, _prevVnode) {
+          update(el, binding);
+        },
+        // Run on subsequent updates to the value supplied to the directive
+        updated(el, binding, _vnode, _prevVnode) {
+          update(el, binding);
+        }
+      })
 
-  // Mount
-  .mount("#app");
+    // Components
+    .component("WorldWideTelescope", WWTComponent)
+    .component('font-awesome-icon', FontAwesomeIcon)
+    .component('vue-slider', VueSlider)
+    .component('transition-expand', TransitionExpand)
+    .component('transition-expand-two', TransitionExpandTwo)
+    .component('icon-button', IconButton)
+    .component('funding-acknowledgement', FundingAcknowledgment)
+    .component('credit-logos', CreditLogos)
+    .component('wwt-hud', wwtHUD)
+
+    // Mount
+    .mount("#app");
+}
