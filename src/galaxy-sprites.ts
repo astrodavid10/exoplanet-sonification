@@ -185,6 +185,10 @@ function init(ctx: any): void {
     console.error("[GalaxySprites] program link error:", ctx.getProgramInfoLog(p));
     buildFailed = true;
   }
+  // Shader objects are refcounted by the linked program; dropping our
+  // references here lets the driver free the compiled sources.
+  ctx.deleteShader(v);
+  ctx.deleteShader(f);
   prog = p;
   aCorner = ctx.getAttribLocation(p, "aCorner");
   aBaseUV = ctx.getAttribLocation(p, "aBaseUV");
@@ -269,7 +273,10 @@ function computeGeometry(): void {
  * No-op if already cached (or already uploaded to GL by build()).
  */
 export function prewarmGalaxySprites(): void {
-  if (cachedAtlas) { return; }
+  // `built` matters as well as `cachedAtlas`: build() releases the CPU-side
+  // copies once they're on the GPU, so after the first 3D draw cachedAtlas is
+  // null even though there is nothing left to prewarm.
+  if (built || cachedAtlas) { return; }
   computeGeometry();
 }
 
@@ -293,6 +300,16 @@ function build(ctx: any): void {
   ctx.texParameteri(ctx.TEXTURE_2D, ctx.TEXTURE_MIN_FILTER, ctx.LINEAR);
   ctx.texParameteri(ctx.TEXTURE_2D, ctx.TEXTURE_MAG_FILTER, ctx.LINEAR);
   built = true;
+
+  // Everything above now lives in GPU memory, so drop the CPU-side copies:
+  // the atlas canvas backing store is 1024×512×4 ≈ 2 MB on desktop and the two
+  // instance ArrayBuffers another ~124 KB. They were previously retained for
+  // the whole session — including for visitors who never entered 3D, since the
+  // prewarm runs at startup. If the context is ever lost and rebuilt, build()
+  // re-runs computeGeometry() from the same deterministic seed.
+  cachedAtlas = null;
+  cachedDustBuf = null;
+  cachedGlowBuf = null;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

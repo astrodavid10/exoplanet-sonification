@@ -487,7 +487,6 @@ import { csvFormatRows, csvParse } from "d3-dsv";
 import { Color, Constellations, Coordinates, Folder, Grids, Layer, LayerManager, RenderContext, Settings, SpreadSheetLayer, Texture, WWTControl } from "@wwtelescope/engine"; //Grids, Poly
 import { AltTypes, AltUnits, MarkerScales, PlotTypes, RAUnits, Thumbnail } from "@wwtelescope/engine-types"; //ImageSetType, PointScaleTypes
 import { GotoRADecZoomParams } from "@wwtelescope/engine-pinia";
-import L, { Map } from "leaflet"; //LeafletMouseEvent
 import { tween } from "femtotween";
 import { MiniDSBase, BackgroundImageset, skyBackgroundImagesets } from "@cosmicds/vue-toolkit";
 import { ImageSetLayer, Place } from "@wwtelescope/engine"; //Imageset
@@ -847,8 +846,7 @@ const ALL_POINTS_3D: Hit3DRow[] = (() => {
 // references; ALL_POINTS_3D was .map()'d from ALL_POINTS so its indexing
 // matches index-for-index. This lookup turns any p ∈ ALL_POINTS into the
 // renderer rowIndex needed by cloudStartPing / cloudSetSearchRing.
-// (globalThis.Map because Leaflet's non-generic Map shadows the built-in.)
-const ROW_INDEX_OF = new globalThis.Map<typeof ALL_POINTS[number], number>();
+const ROW_INDEX_OF = new Map<typeof ALL_POINTS[number], number>();
 ALL_POINTS.forEach((p, i) => ROW_INDEX_OF.set(p, i));
 
 // === Kiosk mode === attract-loop source: the same 20 recognizable exoplanets
@@ -1183,8 +1181,6 @@ export default defineComponent({
       currentTool: "crossfade" as ToolType, //"choose-background" as ToolType,
       tab: 0,
 
-      circle: null as L.Circle | null,
-      map: null as Map | null,
 
       selectionProximity: 4,
       pointerMoveThreshold: 6,
@@ -1210,6 +1206,9 @@ export default defineComponent({
       // Attract loop (auto-cycles curated exoplanets in 3D after idle; guest
       // touch stops it).
       attractMode: false,
+      // True during enterAttract's 3 s settle, before attractMode flips. Guards
+      // both re-entry into enterAttract and guest touches in that window.
+      attractPending: false,
       attractTimer: 0,
       attractOrder: [] as (typeof ALL_POINTS),
       attractIdx: 0,
@@ -1278,7 +1277,10 @@ export default defineComponent({
       this.showIntro = false;
 
       // Anonymous, local-only usage stats (viewable via ?kioskStats=1).
-      statsInit(this.kioskMode);
+      // statsInit owns a flush interval plus pagehide/visibilitychange
+      // listeners; hold its teardown so a remount (dev HMR, or beforeUnmount)
+      // doesn't stack a second set.
+      this.kioskCleanups.push(statsInit(this.kioskMode));
 
       this.kioskCleanups.push(installKioskGuards({
         onExternalLink: (url, title) => this.showQR(url, title),
@@ -1382,11 +1384,6 @@ export default defineComponent({
       /*EXOPLANET GENERATION STARTS HERE!*/
 
       // Ensure all checkboxes are on by default
-      // Initialize all catalog checkboxes (single source of truth)
-      Object.keys(DATA_STRINGS).forEach(cat => {
-        console.log("layersOn initialized for:", cat); // <-- added
-      });
-
       // Single array to hold the created layers
       const tableLayerPromises: Promise<Layer>[] = [];
 
@@ -1395,10 +1392,7 @@ export default defineComponent({
 
       // Create one layer per catalog (no merging)
       Object.entries(DATA_STRINGS).forEach(([cat, csvString], _index) => {
-        console.log("Processing catalog:", cat); // <-- added
-
         if (!this.layersOn[cat]) {
-          console.log("  Skipping because layersOn is false");
           return;
         }
 
@@ -1447,20 +1441,6 @@ export default defineComponent({
             layer.set_endDateColumn(7);   // end_date column
 
             layer.set_markerScale(MarkerScales.screen);
-
-            console.log(
-              "Layer:", cat,
-              "Start column:", layer.get_startDateColumn(),
-              "End column:", layer.get_endDateColumn(),
-              "Time series:", layer.get_timeSeries(),
-              "Dynamic:", layer.get_dynamicData()
-            );
-
-            // Optional: inspect first few rows after 2 seconds
-            setTimeout(() => {
-              const data = layer.getTableDataInView();
-              console.log("  Points count:", data.split("\r\n").length - 1); // <-- added
-            }, 2000);
 
             return layer;
           })
@@ -1580,14 +1560,19 @@ export default defineComponent({
       // delete this block, the matching imports at the top, and src/galaxy3d.ts.
       installGalaxy3D();
       // Pre-run the galaxy sprite atlas paint + structure build (pure canvas/
-      // math, no GL) during idle so the first 3D draw only has to upload
-      // buffers/textures instead of stalling on procedural noise synthesis.
-      const galaxyIdle = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void }).requestIdleCallback;
-      if (typeof galaxyIdle === "function") {
-        galaxyIdle(() => prewarmGalaxySprites(), { timeout: 10000 });
-      } else {
-        setTimeout(() => prewarmGalaxySprites(), 6000);
-      }
+      // math, no GL) so the first 3D draw only has to upload buffers/textures
+      // instead of stalling on procedural noise synthesis. buildGalaxyAtlas
+      // paints 8 cells of fbm noise — on desktop that's 512×512×8 pixels at up
+      // to 4 octaves each, ~1.4M valueNoise evaluations in one synchronous task.
+      //
+      // The JWST original scheduled this via requestIdleCallback because that
+      // app starts in 2D and has seconds of idle before 3D is reachable. This
+      // app starts in 3D (`let mode = "3D"` at module scope), so an idle
+      // callback can easily lose the race against the Gaia texture load above —
+      // and then the whole paint runs lazily *inside* the first render frame,
+      // during startup, competing with the catalog upload. Run it on a macrotask
+      // instead: off the mount critical path, but before the first 3D draw.
+      setTimeout(() => prewarmGalaxySprites(), 0);
 
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore
@@ -1945,6 +1930,11 @@ export default defineComponent({
     },
 
 
+    // Console-invoked layer inspector (window.app.logLayerData("transit")).
+    // Same class of tool as the window.__pingDebug knob in spawnPing3D: it has
+    // no callers in the app and exists purely to be typed into DevTools, so
+    // its console output is intentional rather than leftover debugging.
+    /* eslint-disable no-console */
     logLayerData(kind: string) {
       const layer = this.layers[kind];
       if (!layer?.getTableDataInView) {
@@ -1970,6 +1960,7 @@ export default defineComponent({
         );
       });
     },
+    /* eslint-enable no-console */
 
     getSliderDate(): Date {
     // compute the year/month from the currentMonthIndex
@@ -2006,7 +1997,7 @@ export default defineComponent({
       // at gain = BASE_TONE_GAIN * sqrt(count). sqrt is acoustic-power flat
       // (perceptual loudness scales sub-linearly with amplitude), and worst
       // case voice count is ≤ 20, no stagger needed.
-      const bins = new globalThis.Map<number, number>();
+      const bins = new Map<number, number>();
       for (const p of newThisMonth) {
         const v = Number(p.plOrbper);
         if (!Number.isFinite(v) || v <= 0) continue;
@@ -2593,15 +2584,6 @@ export default defineComponent({
       return Math.min(fovW, fovH);
     },
     
-    /*circleForLocation(latDeg: number, lonDeg: number): L.Circle<any> {
-      return L.circle([latDeg, lonDeg], {
-        color: "#FF0000",
-        fillColor: "#FF0033",
-        fillOpacity: 0.5,
-        radius: 200
-      });
-    },*/
-
     /* Toggles the hamburger menu when the hamburger icon is clicked */
     toggleMenu() {
       this.isMenuOpen = !this.isMenuOpen;
@@ -3359,19 +3341,18 @@ export default defineComponent({
         ...pos,
         instant: false
       }).catch((err) => {
-        console.log(err);
+        console.error(err);
       });
-      
-      
+
+
     },
-    
+
     shinkWWT(aspect: number = null as unknown as number) {
       // default aspect = 5.7
       if (aspect == null) {
         aspect = 5.7;
       }
-      console.log('shinkWWT');
-      
+
       const mainContent = document.querySelector(".wwtelescope-component") as HTMLElement;
       const width = mainContent.clientWidth;
       const height = width / aspect;
@@ -3509,13 +3490,24 @@ export default defineComponent({
     // Entered on idle: reset to the app's clean default (3D) view, then
     // auto-cycle a curated set of exoplanets.
     enterAttract() {
+      // Re-entrancy guard. The idle watcher's pointermove handler clears its
+      // own `idle` flag without calling onActive, so a hovering hand or a
+      // nudged mouse during the tour lets onIdle fire a SECOND time — which
+      // re-ran resetKioskView (a jarring mid-tour camera re-home) and
+      // overwrote attractTimer, orphaning the in-flight attractNext step.
+      if (this.attractMode || this.attractPending) { return; }
+
       // The session ends at the guest's LAST activity, not when the idle timer
       // fired, so the idle tail isn't counted as dwell.
       statsSessionEnd(this.kioskIdleWatcher?.lastActivityTs() ?? Date.now());
       this.resetKioskView();
       // 3 s settle lets set3DMode's deferred camera move finish before the
-      // first attract step, so they don't fight.
+      // first attract step, so they don't fight. attractPending covers this
+      // window: attractMode is still false, so without it a guest who touches
+      // during these 3 s was not protected and the tour launched on top of them.
+      this.attractPending = true;
       this.attractTimer = window.setTimeout(() => {
+        this.attractPending = false;
         this.attractMode = true;
         this.attractOrder = shuffled(KIOSK_ATTRACT_POOL);
         this.attractIdx = 0;
@@ -3560,12 +3552,14 @@ export default defineComponent({
     stopAttract() {
       window.clearTimeout(this.attractTimer);
       this.attractMode = false;
+      this.attractPending = false;
       // Deliberately do NOT reset the view: the guest starts where the tour left them.
     },
 
-    // Any genuine guest activity while attract is running stops the tour.
+    // Any genuine guest activity while attract is running — or during the 3 s
+    // settle before it starts — stops the tour.
     onKioskActivity() {
-      if (this.attractMode) { this.stopAttract(); }
+      if (this.attractMode || this.attractPending) { this.stopAttract(); }
       // Start a session on the first interaction after load OR after an
       // attract reset. Idempotent while a session is already open.
       statsSessionStart();
@@ -3719,6 +3713,19 @@ export default defineComponent({
     if (this.hoverRafId !== null) {
       cancelAnimationFrame(this.hoverRafId);
       this.hoverRafId = null;
+    }
+    // Unmounting mid-demo used to leak the tuning-fork rAF loop and its window
+    // resize listener, which were only torn down by exitTuningFork. _tfHardStop
+    // does both (plus restores minZoom and WWT's planet sprites). Guarded on
+    // tfActive because it touches the engine, which may already be torn down.
+    if (this.tfActive) { this._tfHardStop(); } else { this._tfStopLoop(); }
+    if (this.tfResizeHandler) {
+      window.removeEventListener("resize", this.tfResizeHandler);
+      this.tfResizeHandler = null;
+    }
+    if (this.popupPinTimer) {
+      clearTimeout(this.popupPinTimer);
+      this.popupPinTimer = null;
     }
     // Undo kiosk guards/watchers (restores window.open, removes listeners, etc.).
     window.clearTimeout(this.attractTimer);

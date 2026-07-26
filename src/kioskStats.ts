@@ -7,7 +7,9 @@
 // attract-loop selections). Data lives entirely in localStorage as per-day
 // rollups (no raw event log). View/export via the ?kioskStats=1 panel.
 
-const STORAGE_KEY = "kioskStats:v1";
+// Exported so the ?kioskStats=1 panel reads the same key rather than repeating
+// the literal — a rename here would otherwise silently orphan the panel.
+export const STORAGE_KEY = "kioskStats:v1";
 const MAX_DAYS = 90;         // cap stored history; oldest days drop on write
 const FLUSH_INTERVAL_MS = 60_000;
 
@@ -51,11 +53,22 @@ function dayKey(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-function readStore(): StatsMap {
+/**
+ * Read and sanity-repair the persisted rollups. Never throws: a corrupt,
+ * absent, or non-object payload yields `{}`. Exported so the stats panel
+ * shares this hardening instead of re-implementing `JSON.parse` — note that
+ * `JSON.parse("null")` *succeeds* and returns null, which is exactly the case
+ * a naive reimplementation lets escape into `Object.keys(...)`.
+ */
+export function readStore(): StatsMap {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) { return {}; }
     const parsed = JSON.parse(raw) as StatsMap;
+    // Rejects null, arrays, and primitives — all of which parse successfully.
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
     // Repair any missing hourly arrays so callers can index safely.
     for (const k of Object.keys(parsed)) {
       const r = parsed[k];
@@ -89,18 +102,47 @@ function flush(): void {
   }
 }
 
-/** Enable stats and load persisted data. All other calls no-op while disabled. */
-export function statsInit(en: boolean): void {
-  enabled = en;
-  if (!enabled) { return; }
+// Teardown state for statsInit. A production kiosk never unmounts, but dev HMR
+// and the component's own beforeUnmount both re-run mounted(); without these
+// the interval and listeners stacked up on every reload.
+let flushTimer: number | null = null;
+let teardown: (() => void) | null = null;
+
+function onVisibilityChange(): void {
+  if (document.visibilityState === "hidden") { flush(); }
+}
+
+const NOOP = () => { /* stats disabled */ };
+
+/**
+ * Enable stats and load persisted data. All other calls no-op while disabled.
+ * Idempotent — a repeat call returns the existing teardown rather than
+ * stacking a second interval and a second pair of listeners. Returns a
+ * cleanup function; the caller should hold it and invoke it on unmount.
+ */
+export function statsInit(en: boolean): () => void {
+  if (!en) { return NOOP; }
+  if (teardown !== null) { return teardown; }
+
+  enabled = true;
   store = readStore();
-  // Runs for the app lifetime (kiosk never unmounts); no handle to clear.
-  window.setInterval(flush, FLUSH_INTERVAL_MS);
+  flushTimer = window.setInterval(flush, FLUSH_INTERVAL_MS);
   // Best-effort flush when the page is hidden/closed (e.g. nightly reload).
   window.addEventListener("pagehide", flush);
-  window.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") { flush(); }
-  });
+  window.addEventListener("visibilitychange", onVisibilityChange);
+
+  teardown = () => {
+    if (flushTimer !== null) {
+      window.clearInterval(flushTimer);
+      flushTimer = null;
+    }
+    window.removeEventListener("pagehide", flush);
+    window.removeEventListener("visibilitychange", onVisibilityChange);
+    flush(); // don't lose the tail of the last interval window
+    enabled = false;
+    teardown = null;
+  };
+  return teardown;
 }
 
 /** Begin a session. Idempotent while a session is already open. */

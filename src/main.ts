@@ -58,13 +58,14 @@ if (boolParam("kioskStats")) {
     //fgName: "PLANCK R2 HFI color composition 353-545-857 GHz", //"Fermi LAT 8-year (gamma)",
     bgName: "Deep Star Maps 2020", //"Eckhard All Sky",
     introTitle: "Exoplanet Sonification",
-    introText: `zzz`,
+    introText: "",
     // Kiosk mode (museum touchscreen): turned on by ?kiosk=1.
     kioskMode: boolParam("kiosk"),
     // Canonical public URL for the take-home QR code shown in kiosk mode.
-    // Leave "" to derive from the current URL minus kiosk params — WRONG if
-    // the kiosk loads from localhost/LAN, so set this before museum deployment!
-    kioskHomeUrl: "",
+    // Must be absolute: an empty value falls back to deriving it from the
+    // current URL, which on an exhibit machine is a localhost/LAN address the
+    // guest's phone cannot reach.
+    kioskHomeUrl: "https://projects.cosmicds.cfa.harvard.edu/exoplanet-sonification/",
   })
 
     // Plugins

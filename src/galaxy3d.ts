@@ -282,6 +282,10 @@ function init(ctx: any): void {
     console.error("[Galaxy3D] program link error:", ctx.getProgramInfoLog(p));
     linkFailed = true;
   }
+  // Shader objects are refcounted by the linked program; dropping our
+  // references here lets the driver free the compiled sources.
+  ctx.deleteShader(v);
+  ctx.deleteShader(f);
   prog = p;
   aPos = ctx.getAttribLocation(p, "aPos");
   aUV = ctx.getAttribLocation(p, "aUV");
