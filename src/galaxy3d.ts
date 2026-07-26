@@ -1,436 +1,466 @@
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-nocheck
+// ── Galaxy3D v3 — hybrid Milky Way (Phase A: texture volume slices) ──────────
+// Design doc: GALAXY3D_PLAN.md. The v2 procedural point cloud this replaces is
+// preserved at _reference/galaxy3d-v2-pointcloud.ts (Phase B cribs its arm /
+// bar / dust placement tables).
+//
+// Phase A draws the planar MW as a stack of quads: an h=0 base slice that
+// REPLACES WWT's own galaxy-image quad, plus N volume slices above/below the
+// plane, all reusing the already-loaded Gaia texture (Grids._milkyWayImage —
+// no new assets). A per-fragment vertical envelope sech²(h / hz(r)) — with
+// hz(r) bulge-thickened near the center and flared in the outer disk — shapes
+// the stack into a lens-with-central-bulge body. A circular vignette
+// (15.5→19 kpc) + black-floor subtraction hide the texture's square footprint.
+// Screen compositing (ONE, ONE_MINUS_SRC_COLOR) keys luminance for free like
+// additive (black pixels add nothing; still order-independent, no sorting) but
+// compresses toward white instead of clipping, so the stacked bulge keeps
+// structure rather than blowing out. Dead corners cost one discard.
+//
+// All geometry goes through galaxy-frame.ts (the image quad's exact transform
+// chain), so the slices sit on the backdrop by construction.
+//
+// Hook: wwt-hacks.ts:drawGalaxyImage calls drawGalaxyEnsemble() right after
+// the base quad, under the same zoom-fade opacity — the whole ensemble fades
+// together (and is gone by fly-in arrival, HANDOFF §1c).
+//
+// Live console tuning (all optional):
+//   window.__gx          = false              // kill switch (slices + sprites)
+//   window.__gxExposure  = 1.0                // slice + glow-sprite brightness ×
+//   window.__gxThickness = 1.0                // slice vertical envelope scale
+//   window.__gxTier      = 'mobile'|'desktop' // force tier…
+//   window.__gxRebuild()                      // …then rebuild slices + sprites
+//   — Phase B sprite knobs (galaxy-sprites.ts / galaxy-structure.ts):
+//   window.__gxSpritesOff = true              // hide the sprite passes only
+//   window.__gxDust       = 1.0               // dust darkening strength ×
+//   window.__gxSprites    = 1.0               // sprite COUNT scale (needs rebuild)
+//   window.__gxSpriteSize = 1.0               // sprite size × (needs rebuild)
+//   window.__gxArmGradient= 0.8               // cross-arm age/color gradient 0..1
+//   — §5 calibration (galaxy-debug.ts):
+//   window.__gxDebugArms  = true              // arm centerline + bar overlay
+//   window.__gxArmPhase   = 0                 // azimuth nudge rad (needs rebuild)
+//   window.__gxArmFlip    = true              // mirror handedness (needs rebuild)
 
-/* eslint-disable */
+// Namespace import: Grids._milkyWayImage and Matrix3d live outside the engine
+// .d.ts (the gap marker-renderer.ts / cosmosweb-field.ts work around), so
+// engine internals are reached via `(Engine as any)`.
+import * as Engine from "@wwtelescope/engine";
+import { MW_ANGLE_SCALE, UNITS_PER_KPC, imageUnitsToWorld, obliquityRad } from "./galaxy-frame";
+import { drawGalaxySprites, rebuildGalaxySprites } from "./galaxy-sprites";
+import { drawGalaxyDebugArms } from "./galaxy-debug";
 
-/* === Galaxy3D ============================================================
- * Procedural 3D point-cloud Milky Way for the WWT solar-system (3D) view.
- *
- * Replaces the flat edge-on milkywaybar.jpg quad with a real 3D star
- * distribution: thin disk + thick disk + bulge + bar + four spiral arms +
- * halo, attenuated by a 3D dust-cloud field along the arms. The star colors
- * mimic Gaia all-sky density renderings (yellow/orange bulge, blue knots in
- * spiral arms, warm interarm disk, cool faint halo).
- *
- * Structural numbers are taken from Bland-Hawthorn & Gerhard (2016), with the
- * bar position angle and "more than two arms but less prominent" guidance
- * from the ESA Gaia Milky Way page.
- *
- * To remove entirely, delete this file and the two short blocks marked
- * "=== Galaxy3D ===" in src/exo-sonification.vue.
- *
- * To disable without uninstalling, set GALAXY3D_ENABLED below to false.
- * ========================================================================*/
+// Master switch (kept from v2; jwst-viewer's install path is unconditional).
+export const GALAXY3D_ENABLED = true;
 
-import {
-  Color, Coordinates, Dates, Grids, PointList,
-  SpaceTimeController, Vector3d
-} from "@wwtelescope/engine";
+// ── Slice configuration ───────────────────────────────────────────────────────
+// Heights in kpc, mirrored ±. The fragment envelope handles vertical/radial
+// falloff, so the top slices only survive over the (thick) bulge — which is
+// exactly what gives the stack its 3D bulge. Grid subdivision is flat-quad
+// cheap; it exists so the Phase B warp can displace outer-ring vertices.
+const SLICE_HEIGHTS_DESKTOP_KPC = [0.12, 0.28, 0.5, 0.85, 1.5];
+const SLICE_HEIGHTS_MOBILE_KPC = [0.2, 0.7];
+const GRID_SUBDIVS_DESKTOP = 24;
+const GRID_SUBDIVS_MOBILE = 16;
+// Total additive strength of the whole stack relative to the base quad.
+// Calibrated in a headed GPU browser 2026-06-12: the envelope eats most of each
+// slice's weight, so the raw stack needs this much gain to read as a volume
+// (0.55 was invisible). Per-tier because the mobile stack's low-sitting slices
+// pass ~2× more light through the vertical envelope per unit weight than the
+// desktop stack — same gain reads twice as bright on a phone (user-confirmed
+// too hot); 1.5 matched the desktop 3.0 look but the user still found mobile
+// a little bright on-device (2026-06-12), so it sits lower deliberately.
+const SLICE_GAIN_DESKTOP = 3.0;
+const SLICE_GAIN_MOBILE = 1.1;
 
+const IS_COARSE_POINTER = (typeof window !== "undefined")
+  && typeof window.matchMedia === "function"
+  && window.matchMedia("(pointer: coarse)").matches;
 
-// ── Master switch ─────────────────────────────────────────────────────────
-export const GALAXY3D_ENABLED = false;
-
-// ── Adaptive particle budget ──────────────────────────────────────────────
-// Mirrors the (pointer: coarse) check that getDeviceScales uses elsewhere.
-function targetStarCount(): number {
-  const coarse = typeof window !== "undefined"
-    && window.matchMedia
-    && window.matchMedia("(pointer: coarse)").matches;
-  return coarse ? 100_000 : 1_500_000;
+function isMobileTier(): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const w = window as any;
+  if (w.__gxTier === "mobile") { return true; }
+  if (w.__gxTier === "desktop") { return false; }
+  return IS_COARSE_POINTER;
 }
 
-// ── Galactic structure constants ──────────────────────────────────────────
-// Distances are in parsecs unless otherwise marked.
-const PC_TO_AU       = 206264.806;
-const R0_PC          = 8200;       // Sun → Galactic Centre (Bland-Hawthorn & Gerhard 2016)
-const DISK_R_INNER   = 200;        // pc, inner cutoff (bulge takes over)
-const DISK_R_OUTER   = 15000;      // pc, edge of stellar disk
-const HR_THIN        = 2600;       // thin-disk scale length
-const HZ_THIN        = 300;        // thin-disk scale height
-const HR_THICK       = 2000;       // thick-disk scale length
-const HZ_THICK       = 900;        // thick-disk scale height
-const BULGE_SCALE    = 700;        // bulge effective radius (pc)
-const BAR_HALF_LEN   = 5000;       // half-length along bar major axis
-const BAR_HALF_WID   = 1000;       // half-width
-const BAR_HALF_HGT   = 500;        // half-height
-// Bar position angle to Sun-GC line. Negative because the near end of the
-// bar lies at positive Galactic longitude (l ≈ +27°), so in our
-// "Sun at galactocentric (-R0, 0, 0)" frame the bar's near (negative-x) end
-// must rotate to positive y.
-const BAR_PA_RAD     = -27 * Math.PI / 180;
-const HALO_SCALE     = 8000;       // halo Plummer-like radius
-const HALO_R_MAX     = 30000;
+// ── Shaders ───────────────────────────────────────────────────────────────────
+// vCamFade: fragments near the camera fade out (computed per-vertex, highp),
+// so sitting inside the disk doesn't fill the screen with slice fog — while
+// the far side of the galaxy, tens of kly away, still glows. Fade runs over
+// camera distances ~10 → ~32 kly (6e8 → 2e9 AU); from any outside vantage
+// every fragment is beyond it. The h=0 base plane (aMeta.x == 0) is exempt —
+// it replaces WWT's own galaxy-image quad, which was always visible from
+// inside (the familiar entry view), so it keeps that legacy behavior.
+const VERT_SRC = `\
+attribute vec3 aPos;
+attribute vec2 aUV;
+attribute vec2 aPlane;
+attribute vec2 aMeta;
+uniform mat4 uMVMatrix;
+uniform mat4 uPMatrix;
+varying vec2 vUV;
+varying vec2 vPlane;
+varying vec2 vMeta;
+varying float vCamFade;
+void main() {
+  vec4 eye = uMVMatrix * vec4(aPos, 1.0);
+  gl_Position = uPMatrix * eye;
+  float fade = smoothstep(600000000.0, 2000000000.0, length(eye.xyz));
+  vCamFade = mix(1.0, fade, step(0.0001, aMeta.x));
+  vUV = aUV;
+  vPlane = aPlane;
+  vMeta = aMeta;
+}
+`;
 
-// Spiral arms: 4 logarithmic arms (Sagittarius, Scutum-Centaurus, Perseus,
-// Norma/Outer), pitch ≈ 12°, base radius 3 kpc.
-const ARM_COUNT      = 4;
-const ARM_PITCH_RAD  = 12 * Math.PI / 180;
-const ARM_R0         = 3500;
-const ARM_SIGMA      = 0.30;       // gaussian width in azimuth (radians)
-const ARM_BOOST      = 4.0;        // multiplicative density bonus inside arms
+// vPlane: in-plane kpc from the GC. vMeta: (|slice height| kpc, slice weight).
+// sech² is written in the exp(-2|x|) ≤ 1 form so it can never overflow
+// mediump's minimum float range on mobile GPUs.
+const FRAG_SRC = `\
+precision mediump float;
+varying vec2 vUV;
+varying vec2 vPlane;
+varying vec2 vMeta;
+varying float vCamFade;
+uniform sampler2D uTex;
+uniform float uOpacity;
+uniform float uThickness;
+float sech2(float x) {
+  float e = exp(-2.0 * abs(x));
+  float s = 1.0 + e;
+  return 4.0 * e / (s * s);
+}
+void main() {
+  float r = length(vPlane);
+  float hz = 0.30 + 0.35 * max(0.0, r - 6.0) / 9.0; // thin disk + outer flare
+  hz += 1.10 * exp(-(r * r) / (1.4 * 1.4));         // bulge thickening
+  float env = sech2(vMeta.x / (hz * uThickness));
+  // Circular vignette: the texture is square (corners reach ~28 kpc from the
+  // GC); fade everything out over 15.5 → 19 kpc so no square edge can show.
+  float vig = smoothstep(19.0, 15.5, r);
+  float a = env * vMeta.y * uOpacity * vCamFade * vig;
+  if (a <= 0.002) discard;
+  // Black-floor subtraction: the image's faint noise floor otherwise
+  // accumulates additively across the stack into a visible square slab.
+  vec3 c = max(texture2D(uTex, vUV).rgb - 0.02, 0.0);
+  gl_FragColor = vec4(c * a, 1.0);
+}
+`;
 
-// Population fractions of the total budget. Tuned so the disk dominates
-// while the bulge and arms still read clearly from outside.
-const FRAC_THIN      = 0.62;
-const FRAC_THICK     = 0.12;
-const FRAC_BULGE     = 0.16;
-const FRAC_BAR       = 0.05;
-const FRAC_HALO      = 0.05;       // (remaining = 1.0)
+// ── Mesh build (CPU, lazy, ~ms) ───────────────────────────────────────────────
+const FLOATS_PER_VERT = 9; // pos3 + uv2 + plane2 + meta2
+const STRIDE_BYTES = FLOATS_PER_VERT * 4;
 
-// ── Dust ─────────────────────────────────────────────────────────────────
-// "Prominent — full dust-lane network" per design choice. Hundreds of dark
-// ellipsoidal clouds in the midplane, biased onto the spiral arm tangents.
-// Stars whose galactocentric position falls inside a cloud are dimmed or
-// rejected, carving the visible dark veins.
-const DUST_CLOUDS_DESKTOP = 320;
-const DUST_CLOUDS_MOBILE  = 140;
-
-interface DustCloud {
-  cx: number; cy: number; cz: number;
-  rx: number; ry: number; rz: number;
-  cosPhi: number; sinPhi: number;
+interface SliceMesh {
+  verts: Float32Array;
+  indices: Uint16Array;
+  indexCount: number;
 }
 
-// ── Per-star draw size (world-space AU) ───────────────────────────────────
-// Tuned so the disk fills the field nicely from a 50-kpc vantage point.
-const STAR_SIZE_AU       = 1.6e7;
-const STAR_SIZE_HALO_AU  = 1.0e7;
-const STAR_SIZE_BULGE_AU = 1.8e7;
-
-// ── Galactic → ICRS rotation matrix (J2000) ───────────────────────────────
-// Liu et al. (2011) values, written column-major so M * (1,0,0) is the unit
-// vector toward the Galactic Centre in ICRS, M * (0,0,1) the vector toward
-// the NGP. Applied to heliocentric Cartesian galactic vectors (X = +toward
-// GC, Y = +toward l=90°, Z = +NGP); one further rotateX(ecliptic) lands in
-// WWT's solar-system world space, matching how stars3D and the 2D bar are
-// oriented.
-const M_GE_00 = -0.054875560; const M_GE_01 =  0.494109440; const M_GE_02 = -0.867666150;
-const M_GE_10 = -0.873437090; const M_GE_11 = -0.444829620; const M_GE_12 = -0.198076380;
-const M_GE_20 = -0.483835020; const M_GE_21 =  0.746982140; const M_GE_22 =  0.455983820;
-
-function galacticToWorldAU(xPc: number, yPc: number, zPc: number, eclipticRad: number): Vector3d {
-  // Translate galactocentric → heliocentric. Convention: Sun at galactocentric
-  // (-R0, 0, 0), so the heliocentric +X points from the Sun toward the GC,
-  // matching the IAU heliocentric galactic frame that M_GE expects.
-  const xh = (xPc + R0_PC) * PC_TO_AU;
-  const yh =  yPc           * PC_TO_AU;
-  const zh =  zPc           * PC_TO_AU;
-  // Rotate galactic → ICRS (standard math convention: y_std = cos δ sin α,
-  // z_std = sin δ).
-  const xe = M_GE_00 * xh + M_GE_01 * yh + M_GE_02 * zh;
-  const ye = M_GE_10 * xh + M_GE_11 * yh + M_GE_12 * zh;
-  const ze = M_GE_20 * xh + M_GE_21 * yh + M_GE_22 * zh;
-  // WWT swaps the y/z axes: Coordinates.raDecTo3dAu emits (cos α cos δ,
-  // sin δ, sin α cos δ) — Y is the declination axis, not Z. To land in the
-  // same world frame as Hipparcos stars and the existing 2D bar (both of
-  // which feed through that swap), we reorder ye ↔ ze before rotateX.
-  const v  = Vector3d.create(xe, ze, ye);
-  v.rotateX(eclipticRad);          // ICRS → WWT ecliptic-of-date world
-  return v;
-}
-
-// ── Stellar palette (Gaia BP-RP-style) ────────────────────────────────────
-// Each entry is [R, G, B] for a population, the colors visually inspired by
-// Gaia's all-sky density renderings.
-const COL_BULGE_HOT  : [number, number, number] = [255, 220, 170];
-const COL_BULGE_COOL : [number, number, number] = [255, 180, 120];
-const COL_BAR        : [number, number, number] = [255, 200, 140];
-const COL_ARM_BLUE   : [number, number, number] = [180, 210, 255];
-const COL_ARM_WHITE  : [number, number, number] = [240, 245, 255];
-const COL_INTERARM   : [number, number, number] = [255, 235, 200];
-const COL_THICK      : [number, number, number] = [255, 205, 160];
-const COL_HALO       : [number, number, number] = [220, 225, 255];
-
-function lerpColor(a: [number, number, number], b: [number, number, number], t: number): [number, number, number] {
-  return [
-    a[0] + (b[0] - a[0]) * t,
-    a[1] + (b[1] - a[1]) * t,
-    a[2] + (b[2] - a[2]) * t,
-  ];
-}
-
-function makeColor(rgb: [number, number, number], att: number): Color {
-  const r = Math.max(0, Math.min(255, Math.round(rgb[0] * att)));
-  const g = Math.max(0, Math.min(255, Math.round(rgb[1] * att)));
-  const b = Math.max(0, Math.min(255, Math.round(rgb[2] * att)));
-  return Color.fromArgb(255, r, g, b);
-}
-
-// ── Sampling helpers ──────────────────────────────────────────────────────
-function rndExp(scale: number): number {
-  // Exponential PDF, mean = scale.
-  return -scale * Math.log(1 - Math.random());
-}
-
-function rndDoubleExp(scale: number): number {
-  // Symmetric double-sided exponential, mean(|x|) = scale.
-  const sign = Math.random() < 0.5 ? -1 : 1;
-  return sign * rndExp(scale);
-}
-
-function rndGauss(): number {
-  // Box-Muller, single sample.
-  let u = 0, v = 0;
-  while (u === 0) u = Math.random();
-  while (v === 0) v = Math.random();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-}
-
-// ── Spiral arm field ──────────────────────────────────────────────────────
-// Returns a smooth boost in [0, ARM_BOOST] indicating how strongly the
-// (x, y) galactocentric point lies on a spiral arm. Used both to bias star
-// samples into arms and to decide the local color palette.
-function armBoost(x: number, y: number): number {
-  const r = Math.hypot(x, y);
-  if (r < ARM_R0 * 0.7 || r > DISK_R_OUTER) return 0;
-  const phi = Math.atan2(y, x);
-  const baseTheta = Math.log(r / ARM_R0) / Math.tan(ARM_PITCH_RAD);
-  // Decreasing arm contrast with radius — Gaia notes arms are less prominent
-  // than older models suggested, so we soften them past R ~ 10 kpc.
-  const fade = r > 10000 ? Math.exp(-(r - 10000) / 4000) : 1;
-  let best = 0;
-  for (let n = 0; n < ARM_COUNT; n++) {
-    const phiArm = baseTheta + n * (2 * Math.PI / ARM_COUNT);
-    let d = (phi - phiArm) % (2 * Math.PI);
-    if (d >  Math.PI) d -= 2 * Math.PI;
-    if (d < -Math.PI) d += 2 * Math.PI;
-    const w = Math.exp(-(d * d) / (2 * ARM_SIGMA * ARM_SIGMA));
-    if (w > best) best = w;
+// Slab thickness each slice represents (half-distance to its neighbours; the
+// innermost slab starts at the mid-plane, which the base quad owns), normalized
+// so the per-slice weights sum to 1 per side.
+function sliceWeights(heights: number[]): number[] {
+  const w: number[] = [];
+  for (let i = 0; i < heights.length; i++) {
+    const lo = i === 0 ? 0 : (heights[i - 1] + heights[i]) / 2;
+    const hi = i === heights.length - 1
+      ? heights[i] + (heights[i] - lo)
+      : (heights[i] + heights[i + 1]) / 2;
+    w.push(hi - lo);
   }
-  return ARM_BOOST * fade * best;
+  const sum = w.reduce((a, b) => a + b, 0);
+  return w.map((x) => x / sum);
 }
 
-// ── Dust cloud field ──────────────────────────────────────────────────────
-function buildDustClouds(count: number): DustCloud[] {
-  const out: DustCloud[] = new Array(count);
-  for (let i = 0; i < count; i++) {
-    // Place along an arm at random radius in the bright band.
-    const r   = 2500 + Math.pow(Math.random(), 0.6) * 11000;     // pc
-    const arm = (i % ARM_COUNT) + Math.floor(Math.random() * ARM_COUNT);
-    const baseTheta = Math.log(r / ARM_R0) / Math.tan(ARM_PITCH_RAD);
-    const phi = baseTheta + (arm % ARM_COUNT) * (2 * Math.PI / ARM_COUNT)
-              + (Math.random() - 0.5) * 0.18;                    // radians of jitter
-    const cx = r * Math.cos(phi);
-    const cy = r * Math.sin(phi);
-    const cz = (Math.random() - 0.5) * 110;                      // |z| up to ~55 pc
-    // Major axis aligned roughly along the arm tangent direction. The
-    // tangent of a logarithmic spiral makes angle (φ + π/2 - pitch) with +x.
-    const tangent = phi + Math.PI / 2 - ARM_PITCH_RAD;
-    const lengthPc = 250 + Math.pow(Math.random(), 0.7) * 1100;  // some long lanes
-    const widthPc  = 70  + Math.random() * 220;
-    const heightPc = 35  + Math.random() * 50;
-    out[i] = {
-      cx, cy, cz,
-      rx: lengthPc, ry: widthPc, rz: heightPc,
-      cosPhi: Math.cos(tangent),
-      sinPhi: Math.sin(tangent),
-    };
-  }
-  return out;
-}
+function buildSliceMesh(): SliceMesh {
+  const mobile = isMobileTier();
+  const heights = mobile ? SLICE_HEIGHTS_MOBILE_KPC : SLICE_HEIGHTS_DESKTOP_KPC;
+  const subdivs = mobile ? GRID_SUBDIVS_MOBILE : GRID_SUBDIVS_DESKTOP;
+  const sliceGain = mobile ? SLICE_GAIN_MOBILE : SLICE_GAIN_DESKTOP;
+  const weights = sliceWeights(heights);
+  const ecliptic = obliquityRad();
 
-// Returns a multiplicative attenuation in [0, 1]. 0 = fully extinguished.
-// We use the *worst* cloud (min) rather than product of all so a single
-// dense cloud can carve a clean dark void.
-function dustAttenuation(x: number, y: number, z: number, clouds: DustCloud[]): number {
-  let att = 1;
-  for (let i = 0; i < clouds.length; i++) {
-    const c  = clouds[i];
-    const dx = x - c.cx, dy = y - c.cy, dz = z - c.cz;
-    // Quick bbox reject.
-    if (Math.abs(dz) > c.rz * 1.5) continue;
-    if (Math.abs(dx) > c.rx * 1.5 && Math.abs(dy) > c.rx * 1.5) continue;
-    const lx =  c.cosPhi * dx + c.sinPhi * dy;
-    const ly = -c.sinPhi * dx + c.cosPhi * dy;
-    const d2 = (lx / c.rx) * (lx / c.rx)
-             + (ly / c.ry) * (ly / c.ry)
-             + (dz / c.rz) * (dz / c.rz);
-    if (d2 < 1) {
-      // Smooth: interior fully dark, edge gradient.
-      const local = d2 * d2;          // 0 at centre, 1 at boundary
-      if (local < att) att = local;
+  const sliceCount = heights.length * 2 + 1; // + the h=0 base plane
+  const vertsPerSlice = (subdivs + 1) * (subdivs + 1);
+  const verts = new Float32Array(sliceCount * vertsPerSlice * FLOATS_PER_VERT);
+  const indices = new Uint16Array(sliceCount * subdivs * subdivs * 6);
+
+  let vi = 0;
+  let ii = 0;
+  let base = 0;
+  for (let s = 0; s < sliceCount; s++) {
+    // s=0 is the mid-plane base slice replacing WWT's own galaxy-image quad:
+    // full weight, no tier gain (and no camera fade — see VERT_SRC).
+    const isBase = s === 0;
+    const hKpc = isBase ? 0 : heights[(s - 1) >> 1] * ((s - 1) % 2 === 0 ? 1 : -1);
+    const weight = isBase ? 1.0 : weights[(s - 1) >> 1] * sliceGain;
+    const hUnits = hKpc * UNITS_PER_KPC;
+    for (let iy = 0; iy <= subdivs; iy++) {
+      // lat runs −64 → +64 about the image center (= the GC), scaled — the
+      // exact extents/UV mapping of the base quad in _patchGalaxyVertexBuffer.
+      const latU = (-64 + 128 * (iy / subdivs)) * MW_ANGLE_SCALE;
+      for (let ix = 0; ix <= subdivs; ix++) {
+        const lngU = (-64 + 128 * (ix / subdivs)) * MW_ANGLE_SCALE;
+        const pt = imageUnitsToWorld(lngU, latU, hUnits, ecliptic);
+        verts[vi++] = pt.x;
+        verts[vi++] = pt.y;
+        verts[vi++] = pt.z;
+        verts[vi++] = 1 - ix / subdivs; // u — matches the base quad
+        verts[vi++] = iy / subdivs;     // v
+        verts[vi++] = lngU / UNITS_PER_KPC; // in-plane kpc from the GC
+        verts[vi++] = latU / UNITS_PER_KPC;
+        verts[vi++] = Math.abs(hKpc);
+        verts[vi++] = weight;
+      }
     }
-  }
-  return att;
-}
-
-// ── Component samplers ────────────────────────────────────────────────────
-// Each returns a galactocentric Cartesian position in pc.
-
-function sampleThinDisk(): [number, number, number] {
-  // Pick radius from exponential, accept/reject window.
-  let r: number;
-  do { r = rndExp(HR_THIN); } while (r < DISK_R_INNER || r > DISK_R_OUTER);
-  const phi = Math.random() * 2 * Math.PI;
-  const z   = rndDoubleExp(HZ_THIN);
-  return [r * Math.cos(phi), r * Math.sin(phi), z];
-}
-
-function sampleThickDisk(): [number, number, number] {
-  let r: number;
-  do { r = rndExp(HR_THICK); } while (r < DISK_R_INNER || r > DISK_R_OUTER);
-  const phi = Math.random() * 2 * Math.PI;
-  const z   = rndDoubleExp(HZ_THICK);
-  return [r * Math.cos(phi), r * Math.sin(phi), z];
-}
-
-function sampleBulge(): [number, number, number] {
-  // Roughly de-Vaucouleurs in radius, oblate.
-  const r = BULGE_SCALE * Math.pow(-Math.log(1 - Math.random()), 1 / 4);
-  const u = Math.random() * 2 - 1;
-  const t = Math.random() * 2 * Math.PI;
-  const sx = Math.sqrt(1 - u * u) * Math.cos(t);
-  const sy = Math.sqrt(1 - u * u) * Math.sin(t);
-  const sz = u;
-  // Slight axial-ratio flattening.
-  return [r * sx, r * sy, r * 0.7 * sz];
-}
-
-function sampleBar(): [number, number, number] {
-  // Triaxial Gaussian along the bar's principal axes, then rotate by BAR_PA.
-  const ax = rndGauss() * BAR_HALF_LEN * 0.5;
-  const ay = rndGauss() * BAR_HALF_WID * 0.5;
-  const az = rndGauss() * BAR_HALF_HGT * 0.5;
-  const c = Math.cos(BAR_PA_RAD), s = Math.sin(BAR_PA_RAD);
-  return [c * ax - s * ay, s * ax + c * ay, az];
-}
-
-function sampleHalo(): [number, number, number] {
-  // Plummer-like, isotropic.
-  let r: number;
-  do {
-    r = HALO_SCALE * Math.tan(Math.random() * (Math.PI / 2 - 0.05));
-  } while (r > HALO_R_MAX);
-  const u = Math.random() * 2 - 1;
-  const t = Math.random() * 2 * Math.PI;
-  const sx = Math.sqrt(1 - u * u) * Math.cos(t);
-  const sy = Math.sqrt(1 - u * u) * Math.sin(t);
-  const sz = u;
-  return [r * sx, r * sy, r * 0.8 * sz];
-}
-
-// ── Build the PointList (cached after first build) ────────────────────────
-let _galaxyList: PointList | null = null;
-let _galaxyBuilding = false;
-
-function buildGalaxy(renderContext): PointList {
-  const total = targetStarCount();
-  const dustCount = total >= 300_000 ? DUST_CLOUDS_DESKTOP : DUST_CLOUDS_MOBILE;
-  const clouds = buildDustClouds(dustCount);
-
-  const list = new PointList(renderContext);
-  list.depthBuffered = false;
-  list.showFarSide   = true;
-  list.scale         = 1;
-  list.minSize       = 1;
-  list.timeSeries    = false;
-
-  const ecliptic = Coordinates.meanObliquityOfEcliptic(SpaceTimeController.get_jNow()) / 180 * Math.PI;
-
-  const N_THIN  = Math.round(total * FRAC_THIN);
-  const N_THICK = Math.round(total * FRAC_THICK);
-  const N_BULGE = Math.round(total * FRAC_BULGE);
-  const N_BAR   = Math.round(total * FRAC_BAR);
-  const N_HALO  = total - N_THIN - N_THICK - N_BULGE - N_BAR;
-
-  const dates = new Dates(0, 1);
-
-  // Thin disk — dust applies, arms bias colors blue-ward.
-  let placed = 0, attempts = 0;
-  while (placed < N_THIN && attempts < N_THIN * 4) {
-    attempts++;
-    const [x, y, z] = sampleThinDisk();
-    const boost = armBoost(x, y);
-    // Arm-density rejection: stronger boost → higher acceptance.
-    if (Math.random() > (1 + boost) / (1 + ARM_BOOST)) continue;
-    const att = dustAttenuation(x, y, z, clouds);
-    // Very dark cloud cores cull the star outright; mid-extinction dims it.
-    if (att < 0.05 && Math.random() > att * 4) continue;
-
-    const inArm = boost > 1.2;
-    let palette: [number, number, number];
-    if (inArm) {
-      // Arm: blue knots and white interspersed.
-      palette = lerpColor(COL_ARM_WHITE, COL_ARM_BLUE, Math.random() * 0.85);
-    } else {
-      palette = lerpColor(COL_INTERARM, COL_ARM_WHITE, Math.random() * 0.4);
+    for (let iy = 0; iy < subdivs; iy++) {
+      for (let ix = 0; ix < subdivs; ix++) {
+        const a = base + iy * (subdivs + 1) + ix;
+        const b = a + 1;
+        const c = a + (subdivs + 1);
+        const d = c + 1;
+        indices[ii++] = a; indices[ii++] = c; indices[ii++] = b;
+        indices[ii++] = b; indices[ii++] = c; indices[ii++] = d;
+      }
     }
-    const v = galacticToWorldAU(x, y, z, ecliptic);
-    list.addPoint(v, makeColor(palette, att), dates, STAR_SIZE_AU);
-    placed++;
+    base += vertsPerSlice;
   }
-
-  // Thick disk — slightly redder, no arm boost, partial dust.
-  for (let i = 0; i < N_THICK; i++) {
-    const [x, y, z] = sampleThickDisk();
-    const att = 0.5 + 0.5 * dustAttenuation(x, y, z, clouds);    // dust mostly thinner
-    const palette = lerpColor(COL_THICK, COL_INTERARM, Math.random() * 0.4);
-    const v = galacticToWorldAU(x, y, z, ecliptic);
-    list.addPoint(v, makeColor(palette, att), dates, STAR_SIZE_AU);
-  }
-
-  // Bulge — dense yellow-orange core, no dust attenuation (extinction is
-  // mostly *between* the bulge and the Sun, an effect we leave to the eye).
-  for (let i = 0; i < N_BULGE; i++) {
-    const [x, y, z] = sampleBulge();
-    const palette = lerpColor(COL_BULGE_HOT, COL_BULGE_COOL, Math.random());
-    const v = galacticToWorldAU(x, y, z, ecliptic);
-    list.addPoint(v, makeColor(palette, 1), dates, STAR_SIZE_BULGE_AU);
-  }
-
-  // Bar — extends the bulge along the position-angle axis.
-  for (let i = 0; i < N_BAR; i++) {
-    const [x, y, z] = sampleBar();
-    const v = galacticToWorldAU(x, y, z, ecliptic);
-    list.addPoint(v, makeColor(COL_BAR, 1), dates, STAR_SIZE_BULGE_AU);
-  }
-
-  // Halo — sparse, faint, cool.
-  for (let i = 0; i < N_HALO; i++) {
-    const [x, y, z] = sampleHalo();
-    const v = galacticToWorldAU(x, y, z, ecliptic);
-    list.addPoint(v, makeColor(COL_HALO, 0.55), dates, STAR_SIZE_HALO_AU);
-  }
-
-  return list;
+  return { verts, indices, indexCount: ii };
 }
 
-// ── Public entry point: drop-in replacement for Grids.drawGalaxyImage ─────
-// Called only from the solar-system render path (3D mode), so we can render
-// the point cloud unconditionally here. The original 2D bar quad is not
-// drawn; in 2D mode `drawGalaxyImage` is never called by the engine.
-export function drawGalaxy3D(renderContext, _opacity: number) {
-  if (!GALAXY3D_ENABLED) return;
+// ── GL state (module-level, marker-renderer pattern) ──────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let gl: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let prog: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let vbo: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let ibo: any = null;
+let indexCount = 0;
+let initialized = false;
+let meshDirty = true;
+let linkFailed = false; // shader didn't link → wwt-hacks falls back to WWT's quad
 
-  if (_galaxyList == null && !_galaxyBuilding) {
-    _galaxyBuilding = true;
-    try {
-      _galaxyList = buildGalaxy(renderContext);
-    } finally {
-      _galaxyBuilding = false;
-    }
+let aPos = -1;
+let aUV = -1;
+let aPlane = -1;
+let aMeta = -1;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let uMV: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let uProj: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let uTex: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let uOpacity: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let uThickness: any = null;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function compile(ctx: any, type: number, src: string): any {
+  const s = ctx.createShader(type);
+  ctx.shaderSource(s, src);
+  ctx.compileShader(s);
+  if (!ctx.getShaderParameter(s, ctx.COMPILE_STATUS)) {
+    // eslint-disable-next-line no-console
+    console.error("[Galaxy3D] shader compile error:", ctx.getShaderInfoLog(s));
   }
-  if (_galaxyList == null) return;
-
-  // Mild zoom-aware fade so the cloud doesn't pop in at the wrong scale.
-  const zoom = renderContext.viewCamera.zoom;
-  const opacity = Math.min(1, Math.max(0, (Math.log(Math.max(1, zoom)) - 14) / 6));
-  if (opacity <= 0) return;
-
-  _galaxyList.draw(renderContext, opacity, false);
+  return s;
 }
 
-// ── Installer ─────────────────────────────────────────────────────────────
-// One-call install. Called from src/exo-sonification.vue (mounted hook).
-// Replaces the WWT 2D-bar draw routine with our 3D version.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function init(ctx: any): void {
+  const v = compile(ctx, ctx.VERTEX_SHADER, VERT_SRC);
+  const f = compile(ctx, ctx.FRAGMENT_SHADER, FRAG_SRC);
+  const p = ctx.createProgram();
+  ctx.attachShader(p, v);
+  ctx.attachShader(p, f);
+  ctx.linkProgram(p);
+  if (!ctx.getProgramParameter(p, ctx.LINK_STATUS)) {
+    // eslint-disable-next-line no-console
+    console.error("[Galaxy3D] program link error:", ctx.getProgramInfoLog(p));
+    linkFailed = true;
+  }
+  // Shader objects are refcounted by the linked program; dropping our
+  // references here lets the driver free the compiled sources.
+  ctx.deleteShader(v);
+  ctx.deleteShader(f);
+  prog = p;
+  aPos = ctx.getAttribLocation(p, "aPos");
+  aUV = ctx.getAttribLocation(p, "aUV");
+  aPlane = ctx.getAttribLocation(p, "aPlane");
+  aMeta = ctx.getAttribLocation(p, "aMeta");
+  uMV = ctx.getUniformLocation(p, "uMVMatrix");
+  uProj = ctx.getUniformLocation(p, "uPMatrix");
+  uTex = ctx.getUniformLocation(p, "uTex");
+  uOpacity = ctx.getUniformLocation(p, "uOpacity");
+  uThickness = ctx.getUniformLocation(p, "uThickness");
+  vbo = ctx.createBuffer();
+  ibo = ctx.createBuffer();
+  gl = ctx;
+  initialized = true;
+  // buildSliceMesh() regenerates fresh geometry from module state (not staged
+  // external data), so re-initializing after a context change fully recovers —
+  // just force the next draw to re-upload into the new vbo/ibo.
+  meshDirty = true;
+  // Console handle for live tier switching (__gxTier then __gxRebuild()).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).__gxRebuild = rebuildGalaxy3D;
+}
+
+function uploadMesh(): void {
+  if (!gl || !vbo || !ibo) { return; }
+  const mesh = buildSliceMesh();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, mesh.verts, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+  indexCount = mesh.indexCount;
+  meshDirty = false;
+}
+
+/**
+ * True when the ensemble replaces WWT's own galaxy-image quad (the h=0 base
+ * slice draws the texture, vignetted circular). wwt-hacks.ts:drawGalaxyImage
+ * falls back to the original quad when this is false (disabled via the __gx
+ * kill switch, or the shader failed to link on this GPU).
+ */
+export function ensembleHandlesBasePlane(): boolean {
+  if (!GALAXY3D_ENABLED || linkFailed || typeof window === "undefined") { return false; }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (window as any).__gx !== false;
+}
+
+// ── Per-frame draw ────────────────────────────────────────────────────────────
+/**
+ * Draw the slice stack (h=0 base plane + volume slices). Called by
+ * wwt-hacks.ts:drawGalaxyImage in place of the original quad, with the same
+ * zoom-fade opacity — only ever in 3D (the engine gates Grids.drawGalaxyImage
+ * on solar-system mode).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function drawGalaxyEnsemble(renderContext: any, opacity: number): void {
+  if (!GALAXY3D_ENABLED || typeof window === "undefined") { return; }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const w = window as any;
+  if (w.__gx === false) { return; }
+  if (opacity <= 0 || !renderContext || !renderContext.gl) { return; }
+
+  // The Gaia texture is created by the base quad's first draw; until it has
+  // streamed in there is nothing to sample.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mwImage = (Engine as any).Grids._milkyWayImage;
+  const texHandle = mwImage && mwImage.texture2d;
+  if (!texHandle) { return; }
+
+  const ctx = renderContext.gl;
+  // Cheap context-loss guard — see footprints.ts's drawFootprints for the
+  // rationale. This module recovers fully: meshDirty forces a re-upload.
+  if (!initialized || gl !== ctx) { init(ctx); }
+  if (meshDirty) { uploadMesh(); }
+  if (indexCount === 0 || !prog || !vbo || !ibo) { return; }
+
+  // Save the GL state we touch.
+  const oldProg = ctx.getParameter(ctx.CURRENT_PROGRAM);
+  const oldArrBuf = ctx.getParameter(ctx.ARRAY_BUFFER_BINDING);
+  const oldElemBuf = ctx.getParameter(ctx.ELEMENT_ARRAY_BUFFER_BINDING);
+  const oldActiveTex = ctx.getParameter(ctx.ACTIVE_TEXTURE);
+  ctx.activeTexture(ctx.TEXTURE0);
+  const oldTex0 = ctx.getParameter(ctx.TEXTURE_BINDING_2D);
+  const oldBlend = ctx.isEnabled(ctx.BLEND);
+  const oldBlendSrc = ctx.getParameter(ctx.BLEND_SRC_RGB);
+  const oldBlendDst = ctx.getParameter(ctx.BLEND_DST_RGB);
+  const oldDepth = ctx.isEnabled(ctx.DEPTH_TEST);
+  const oldDepthMask = ctx.getParameter(ctx.DEPTH_WRITEMASK);
+  const oldCull = ctx.isEnabled(ctx.CULL_FACE);
+
+  ctx.useProgram(prog);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mv = (Engine as any).Matrix3d.multiplyMatrix(renderContext.get_world(), renderContext.get_view());
+  ctx.uniformMatrix4fv(uMV, false, mv.floatArray());
+  ctx.uniformMatrix4fv(uProj, false, renderContext.get_projection().floatArray());
+  const exposure = typeof w.__gxExposure === "number" ? w.__gxExposure : 1;
+  ctx.uniform1f(uOpacity, opacity * exposure);
+  const thickness = typeof w.__gxThickness === "number" ? Math.max(0.05, w.__gxThickness) : 1;
+  ctx.uniform1f(uThickness, thickness);
+  ctx.bindTexture(ctx.TEXTURE_2D, texHandle);
+  ctx.uniform1i(uTex, 0);
+
+  ctx.bindBuffer(ctx.ARRAY_BUFFER, vbo);
+  ctx.bindBuffer(ctx.ELEMENT_ARRAY_BUFFER, ibo);
+  // WWT's shaders leave attribs 0–3 enabled; disable defensively.
+  ctx.disableVertexAttribArray(0);
+  ctx.disableVertexAttribArray(1);
+  ctx.disableVertexAttribArray(2);
+  ctx.disableVertexAttribArray(3);
+
+  if (aPos >= 0) {
+    ctx.enableVertexAttribArray(aPos);
+    ctx.vertexAttribPointer(aPos, 3, ctx.FLOAT, false, STRIDE_BYTES, 0);
+  }
+  if (aUV >= 0) {
+    ctx.enableVertexAttribArray(aUV);
+    ctx.vertexAttribPointer(aUV, 2, ctx.FLOAT, false, STRIDE_BYTES, 12);
+  }
+  if (aPlane >= 0) {
+    ctx.enableVertexAttribArray(aPlane);
+    ctx.vertexAttribPointer(aPlane, 2, ctx.FLOAT, false, STRIDE_BYTES, 20);
+  }
+  if (aMeta >= 0) {
+    ctx.enableVertexAttribArray(aMeta);
+    ctx.vertexAttribPointer(aMeta, 2, ctx.FLOAT, false, STRIDE_BYTES, 28);
+  }
+
+  // Screen compositing (ONE, ONE_MINUS_SRC_COLOR): commutative like additive
+  // (order-independent, black still keys itself), but each slice's light is
+  // scaled by the headroom left below white, so the stack saturates smoothly
+  // toward 1.0 instead of clipping — the bulge/core keeps structure at the
+  // desktop gain rather than blowing out to a white slab. Faint regions are
+  // unchanged (dst ≈ 0 ⇒ screen ≈ additive). Slices are visible from both
+  // sides, so no face culling.
+  ctx.enable(ctx.BLEND);
+  ctx.blendFunc(ctx.ONE, ctx.ONE_MINUS_SRC_COLOR);
+  ctx.disable(ctx.DEPTH_TEST);
+  ctx.depthMask(false);
+  ctx.disable(ctx.CULL_FACE);
+
+  ctx.drawElements(ctx.TRIANGLES, indexCount, ctx.UNSIGNED_SHORT, 0);
+
+  if (aPos >= 0) { ctx.disableVertexAttribArray(aPos); }
+  if (aUV >= 0) { ctx.disableVertexAttribArray(aUV); }
+  if (aPlane >= 0) { ctx.disableVertexAttribArray(aPlane); }
+  if (aMeta >= 0) { ctx.disableVertexAttribArray(aMeta); }
+
+  // Restore GL state.
+  if (oldBlend) { ctx.enable(ctx.BLEND); } else { ctx.disable(ctx.BLEND); }
+  ctx.blendFunc(oldBlendSrc, oldBlendDst);
+  if (oldDepth) { ctx.enable(ctx.DEPTH_TEST); } else { ctx.disable(ctx.DEPTH_TEST); }
+  ctx.depthMask(oldDepthMask);
+  if (oldCull) { ctx.enable(ctx.CULL_FACE); }
+  ctx.bindTexture(ctx.TEXTURE_2D, oldTex0);
+  ctx.activeTexture(oldActiveTex);
+  ctx.bindBuffer(ctx.ARRAY_BUFFER, oldArrBuf);
+  ctx.bindBuffer(ctx.ELEMENT_ARRAY_BUFFER, oldElemBuf);
+  ctx.useProgram(oldProg);
+
+  // Phase B: dust + glow sprite clouds over the slice stack (each saves/restores
+  // its own GL state). Glow shares the slice exposure; dust tracks the raw fade.
+  drawGalaxySprites(renderContext, opacity, exposure);
+  // §5 calibration overlay — only when window.__gxDebugArms is set.
+  drawGalaxyDebugArms(renderContext, opacity);
+}
+
+// ── Public API (kept from v2 so jwst-viewer.vue needs no flow changes) ────────
 export function installGalaxy3D(): void {
-  if (!GALAXY3D_ENABLED) return;
-  // @ts-ignore -- monkey-patch
-  Grids.drawGalaxyImage = drawGalaxy3D;
+  // v3 needs no engine monkey-patch of its own: wwt-hacks.ts:drawGalaxyImage
+  // invokes drawGalaxyEnsemble() after drawing the base quad. Kept for API
+  // compatibility with jwst-viewer.vue's install3DHacks().
 }
 
-// ── Optional: rebuild (e.g. when the user changes mobile/desktop tier) ────
+/** Drop the slice mesh + sprite buffers; both rebuild (current tier) next draw. */
 export function rebuildGalaxy3D(): void {
-  _galaxyList = null;
+  meshDirty = true;
+  rebuildGalaxySprites();
 }
