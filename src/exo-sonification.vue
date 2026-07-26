@@ -484,7 +484,7 @@
 <script lang="ts">
 import { defineComponent, PropType, toRaw } from 'vue';
 import { csvFormatRows, csvParse } from "d3-dsv";
-import { Color, Constellations, Coordinates, Folder, Grids, Layer, LayerManager, RenderContext, Settings, SpreadSheetLayer, Texture, WWTControl } from "@wwtelescope/engine"; //Grids, Poly
+import { Color, Constellations, Coordinates, Folder, Grids, Layer, LayerManager, Matrix3d, RenderContext, Settings, SpreadSheetLayer, Texture, WWTControl } from "@wwtelescope/engine"; //Grids, Poly
 import { AltTypes, AltUnits, MarkerScales, PlotTypes, RAUnits, Thumbnail } from "@wwtelescope/engine-types"; //ImageSetType, PointScaleTypes
 import { GotoRADecZoomParams } from "@wwtelescope/engine-pinia";
 import { tween } from "femtotween";
@@ -662,6 +662,12 @@ interface TFRuntime {
   color: string;       // colour once activated
   activated: boolean;
 }
+
+// Heliocentric ecliptic AU → canvas pixels, for one frame. Built by
+// _tfMakeProjector() (see the comment there for why we don't use WWT's own
+// getScreenPointForCoordinates for this). Returns null for vertices behind the
+// camera or far outside the canvas.
+type TFProjector = (x: number, y: number, z: number) => { x: number; y: number } | null;
 
 function pitchIndexForPeriod(plOrbper: number, n: number): number {
   if (!Number.isFinite(plOrbper) || plOrbper <= 0) return 0;
@@ -3078,12 +3084,76 @@ export default defineComponent({
     // getScreenPointForCoordinates() does NO arg swap in solar-system mode
     // (Vector3d.create(x, y, z), engine index.js:68289), so the world vertex is
     // exactly (xe, ye, ze) and the orbital plane is the world XY plane (z≈0).
+    // Build a projector for the current frame: heliocentric ecliptic AU →
+    // canvas pixels.
+    //
+    // We deliberately do NOT use WWTControl.getScreenPointForCoordinates here.
+    // It ends in transformWorldPointToPickSpace, whose last two lines are
+    //     p.x = Math.round((1 + vx) * backBufferWidth  / 2);
+    //     p.y = Math.round((1 - vy) * backBufferHeight / 2);
+    // (engine index.js:68271) — every vertex is snapped to a whole pixel.
+    // Stroking ~160 snapped vertices around an orbit turns a smooth ellipse
+    // into a staircase, which is the "wiggly orbit lines" artifact.
+    //
+    // Tessellation was never the cause, and raising the segment count would
+    // have made it WORSE. For a 400 px orbit:
+    //
+    //   segments   chord   faceting   zigzag from the ±0.5 px snap
+    //        160   15.7px    0.077px    3.6°
+    //        320    7.9px    0.019px    7.3°
+    //
+    // The snap is a fixed ±0.5 px regardless of chord length, so shortening the
+    // chord only steepens the kink at each joint. Faceting is already an order
+    // of magnitude below one pixel at 160 segments; leave the count alone.
+    //
+    // Rounding is the right call for the engine's own use (hit-testing, where
+    // sub-pixel precision is meaningless), so this reimplements the identical
+    // transform in floating point rather than patching the engine.
+    //
+    // It is also much cheaper. getScreenPointForCoordinates recomposes
+    // world·view·projection on *every call* — ~2,000 matrix multiplies per
+    // frame across 13 orbits. Here the matrix is composed once and the hot loop
+    // is pure arithmetic on hoisted locals.
+    _tfMakeProjector(): TFProjector | null {
+      // Read the engine's own render context, so W/H match exactly what
+      // transformWorldPointToPickSpace would have used. get_world/get_view are
+      // absent from the engine's .d.ts, hence the cast (Matrix3d itself is now
+      // declared in shims-wwt.d.ts).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rc: any = (WWTControl.singleton as unknown as any)?.renderContext;
+      if (!rc || typeof rc.get_world !== "function") return null;
+      let m = Matrix3d.multiplyMatrix(rc.get_world(), rc.get_view());
+      m = Matrix3d.multiplyMatrix(m, rc.get_projection());
+      if (!m) return null;
+
+      const m11 = m.get_m11(), m21 = m.get_m21(), m31 = m.get_m31(), m41 = m.get_m41();
+      const m12 = m.get_m12(), m22 = m.get_m22(), m32 = m.get_m32(), m42 = m.get_m42();
+      const m14 = m.get_m14(), m24 = m.get_m24(), m34 = m.get_m34(), m44 = m.get_m44();
+      const halfW = rc.width / 2;
+      const halfH = rc.height / 2;
+      const maxX = this.tfCanvasW + 2000;
+      const maxY = this.tfCanvasH + 2000;
+
+      return (x: number, y: number, z: number) => {
+        const d = x * m14 + y * m24 + z * m34 + m44;
+        // Behind the camera. The engine skips this check, which is what lets
+        // antipodal points mirror into frame elsewhere in the app; for a
+        // top-down orbit view it should never fire, but a bad camera state
+        // shouldn't be able to smear an orbit across the canvas.
+        if (!(d > 0)) return null;
+        const sx = (1 + (x * m11 + y * m21 + z * m31 + m41) / d) * halfW;
+        const sy = (1 - (x * m12 + y * m22 + z * m32 + m42) / d) * halfH;
+        if (!Number.isFinite(sx) || !Number.isFinite(sy)) return null;
+        if (sx < -2000 || sx > maxX || sy < -2000 || sy > maxY) return null;
+        return { x: sx, y: sy };
+      };
+    },
+
+    // Single-point convenience wrapper (ping placement). Composes the matrix
+    // for one point, so don't call it in a loop — use _tfMakeProjector.
     _tfProject(xe: number, ye: number, ze: number): { x: number; y: number } | null {
-      const s = WWTControl.singleton.getScreenPointForCoordinates(xe, ye, ze);
-      if (!s || !Number.isFinite(s.x) || !Number.isFinite(s.y)) return null;
-      if (s.x < -2000 || s.x > this.tfCanvasW + 2000 ||
-          s.y < -2000 || s.y > this.tfCanvasH + 2000) return null;
-      return { x: s.x, y: s.y };
+      const project = this._tfMakeProjector();
+      return project ? project(xe, ye, ze) : null;
     },
 
     _tfActivate(i: number, simJD: number) {
@@ -3160,12 +3230,17 @@ export default defineComponent({
       if (!ctx) return;
       ctx.clearRect(0, 0, this.tfCanvasW, this.tfCanvasH);
 
+      // One matrix compose for the whole frame — orbits, star, and bodies all
+      // project through this. See _tfMakeProjector.
+      const project = this._tfMakeProjector();
+      if (!project) return;
+
       // Orbit paths (under the bodies).
       for (const rt of this.tfBodies) {
         ctx.beginPath();
         let started = false;
         for (const v of rt.orbit) {
-          const p = this._tfProject(v[0], v[1], v[2]);
+          const p = project(v[0], v[1], v[2]);
           if (!p) { started = false; continue; }
           if (!started) { ctx.moveTo(p.x, p.y); started = true; }
           else ctx.lineTo(p.x, p.y);
@@ -3184,7 +3259,7 @@ export default defineComponent({
       ctx.globalAlpha = 1;
 
       // Central star.
-      const s0 = this._tfProject(0, 0, 0);
+      const s0 = project(0, 0, 0);
       if (s0) {
         const r = 14;
         const g = ctx.createRadialGradient(s0.x, s0.y, 0, s0.x, s0.y, r);
@@ -3200,7 +3275,7 @@ export default defineComponent({
       // Bodies (all orbit from the start; colour flips on activation).
       for (const rt of this.tfBodies) {
         const pos = eclipticPositionAU(rt.body, simJD);
-        const p = this._tfProject(pos[0], pos[1], pos[2]);
+        const p = project(pos[0], pos[1], pos[2]);
         if (!p) continue;
         if (rt.activated) {
           ctx.fillStyle = rt.color;

@@ -27,10 +27,14 @@ corepack enable
 yarn install
 
 yarn serve      # dev server
-yarn build      # webpack production build
+yarn build      # webpack production build (also type-checks .vue files)
 yarn lint       # ESLint
-yarn typecheck  # tsc --noEmit
+yarn typecheck  # tsc --noEmit (.ts modules only — see below)
 ```
+
+`yarn typecheck` covers the `.ts` modules. It does **not** look inside single-file components:
+the `*.vue` wildcard shim types every SFC as `DefineComponent<{}, {}, any>`, so only `yarn build`
+type-checks the `<script>` blocks. Run the build before trusting a change to a `.vue` file.
 
 `modify_index.py` is an **optional** local hotfix, not part of the build: it removes a line from
 `node_modules/@wwtelescope/engine/src/index.js` whose `onGestureChange` handler double-applies iOS
