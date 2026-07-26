@@ -223,6 +223,14 @@ Hover plays at `HOVER_TONE_GAIN` (0.26), deliberately below `BASE_TONE_GAIN` (0.
 ### Responsive dot sizing
 `getDeviceScales(twoD)` (module-level helper) returns scale factors based on `window.matchMedia('(pointer: coarse)')` and `window.devicePixelRatio`. Called both at layer creation and in `updateLayerScales()` (triggered on every 2D/3D mode switch). Keep both call sites in sync when changing scale values.
 
+**Marker antialiasing (footgun)**: in `exoplanet-renderer.ts`'s `FRAG_SRC`, the AA ramp and the ring stroke are sized in **device pixels** via the `vSize` varying (`px = 1.0 / vSize` in `gl_PointCoord` units) — *not* as fractions of the sprite. Sizing them off `r` alone looks natural and is wrong: the original `smoothstep(0.50, 0.46, …)` ramp plus `0.06·size` stroke only produce the intended ~1 px band at a ~25 px sprite. Real 2D sprites are 6–10 device px, which puts the stroke at 0.36–0.60 px and the ramp at 0.24–0.40 px — both sub-pixel, so 2D rings broke into scattered lit pixels (worst on phones, where the sprite is also physically ~⅓ the size). The shader also cross-fades to a filled disc below ~6 px, where a stroke plus two ramps plus a hole cannot fit.
+
+Correspondingly, the marker size is **not rounded** — rounding quantises to whole CSS px (3 device px at DPR 3) and makes dots pop between sizes while zooming. Fractional sizes render cleanly now that AA is pixel-anchored.
+
+Sprite size itself is still tunable live: `window.__cloudDotSize2D` / `__cloudDotSize3D`, and `__cloudHollow2D` / `__cloudHollow3D` for ring vs filled disc. Mobile 2D's base of 4 CSS px (driven to 2–3 by the zoom formula) is on the small side for a ring and is a reasonable thing to raise.
+
+**Keep all shader sources pure ASCII.** GLSL ES 1.00 defines its source character set as ASCII, and some mobile drivers reject non-ASCII bytes *even inside comments* — an em dash in a comment is enough to fail compilation on a phone while working fine on desktop.
+
 ### Mobile reticle
 On touch devices, a reticle overlay triggers `updateLastClosePoint` for whatever planet is under it. The toggle button is `position: absolute; bottom: 20%; right: 1rem` inside `#main-content` (moved out of the hamburger container to avoid layout conflicts).
 
