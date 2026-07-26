@@ -209,7 +209,13 @@ Two guards matter and neither is optional:
 - **`HOVER_TONE_MIN_MS` (120 ms) rate limit**, tracked via `lastHoverToneMs`. The `needsUpdate` check alone is not enough: in the Kepler/TESS clumps the *nearest* planet changes on nearly every animation frame while panning, which would fire a note per frame.
 - **`!this.isPlaying`** — timeline playback owns the audio while it runs.
 
-Hover plays at `HOVER_TONE_GAIN` (0.26), deliberately below `BASE_TONE_GAIN` (0.42) used by search selection and playback, so incidental hover sits under explicit actions. Hover does **not** fire a ping — pings remain reserved for search selection (`selectSearchResult`) and timeline playback (`handlePointTransitions`). `updateLastClosePoint` also early-returns while a tuning-fork demo is active (the demo owns the popover) and while `popupPinned` is set.
+Hover plays at `HOVER_TONE_GAIN` (0.26), deliberately below `BASE_TONE_GAIN` (0.42) used by search selection and playback, so incidental hover sits under explicit actions.
+
+Hover also fires a **ping** on the identified planet, via the renderer's world-space ring pass (`cloudStartPing`). Tone and ping share the one `HOVER_TONE_MIN_MS` gate on purpose — they're two halves of the same "you are on this planet" cue, and throttling them separately would let them drift out of step. Rings self-expire (`DEFAULT_PING_DUR_MS` = 450 ms, pruned every `_drawRings` call), so the ~4 concurrent rings a fast pan can produce don't accumulate.
+
+`updateLastClosePoint` early-returns while a tuning-fork demo is active (the demo owns the popover) and while `popupPinned` is set.
+
+**`PointData.rowIndex`** is what makes the hover ping possible: `ALL_POINTS`, `ALL_POINTS_3D`, and the renderer's static vertex buffer are all index-aligned, so the hit-test's loop index *is* the renderer row that `cloudStartPing` / `cloudSetSearchRing` address. Both `_closestInView2D` and `_closestInView3D` return it; `selectSearchResult` derives it via `ROW_INDEX_OF.get(toRaw(pt))` (the `toRaw` matters — Vue wraps template-bound rows in a Proxy that won't match the Map key). `-1` means unknown, and `startPing` bounds-checks anyway.
 
 (Historical note: an earlier revision passed a synthetic `gdist`-derived value as `plOrbper`; that is gone — the real orbital period is used.)
 
