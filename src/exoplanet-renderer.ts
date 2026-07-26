@@ -96,8 +96,6 @@ let _uProj: any = null;
 let _uPixelScale: any = null;
 let _uOpacity: any = null;
 let _uHollow: any = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _uCrisp: any = null;
 let _uNowDays: any = null;
 let _uCatMask: any = null;
 
@@ -192,37 +190,28 @@ void main() {
 }
 `;
 
-// uHollow > 0.5 → thin AA ring. Otherwise → smoothstep-edged filled disc.
+// uHollow > 0.5 -> thin AA ring. Otherwise -> smoothstep-edged filled disc.
 //
-// uCrisp selects between two ways of sizing the antialiasing and the ring
-// stroke. Both paths are compiled in and switched by a uniform, so the two can
-// be A/B'd live from the console (window.__cloudCrisp) on a real device —
-// see CRISP_MARKERS in this file for the compile-time default and the
-// full revert instructions.
+// The antialiasing ramp and the ring stroke are sized in DEVICE PIXELS, via
+// the vSize varying: one pixel is 1.0/vSize in gl_PointCoord units.
 //
-//   uCrisp = 0  LEGACY. Bands are fractions of the sprite: AA ramp 0.04·size,
-//               opaque stroke 0.06·size. The "1-px AA band" this was named for
-//               only holds at a 25 px sprite. In 2D the sprite is 6–10 device
-//               px, so the stroke lands at 0.36–0.60 px and the AA ramp at
-//               0.24–0.40 px — both under one pixel, so the ring cannot
-//               resolve and breaks into scattered lit pixels. Worst on phones,
-//               where the sprite is also physically ~1/3 the size.
+// This matters, and the obvious alternative is wrong. Sizing them as fractions
+// of the sprite (the original 0.04 ramp / 0.06 stroke) looks reasonable but
+// only yields the intended ~1 px band at a ~25 px sprite. Real 2D sprites are
+// 6-10 device px, which put the stroke at 0.36-0.60 px and the ramp at
+// 0.24-0.40 px -- both under one pixel, so the ring could not resolve and broke
+// into scattered lit pixels. It read worst on phones, where the sprite is also
+// physically about a third the size. If you ever find yourself re-deriving
+// these from `r` alone, that is the bug you are reintroducing.
 //
-//   uCrisp = 1  Bands anchored to DEVICE PIXELS via vSize. One pixel is
-//               1.0/vSize in gl_PointCoord units, so the AA ramp is a true
-//               ~0.75 px and the stroke has a ~1.4 px floor at any sprite
-//               size, while still widening proportionally on large sprites
-//               (the 0.03 term) so zoomed-in rings keep their old weight.
-//               Below ~6 px there is no room for a stroke plus two ramps plus
-//               a hole, so it cross-fades to a filled disc rather than showing
-//               a broken ring.
+// Keep this source pure ASCII: GLSL ES 1.00 defines its source character set as
+// ASCII and some mobile drivers reject non-ASCII bytes even inside comments.
 const FRAG_SRC = `\
 precision mediump float;
 varying vec4 vColor;
 varying float vSize;
 uniform float uOpacity;
 uniform float uHollow;
-uniform float uCrisp;
 
 void main() {
   vec2 p = gl_PointCoord - vec2(0.5);
@@ -230,43 +219,32 @@ void main() {
   float a;
   vec3 col = vColor.rgb;
 
-  if (uCrisp > 0.5) {
-    float px = 1.0 / vSize;          // one device pixel, in point-coord units
-    // AA ramp: capped so big dots stay sharp, floored so smoothstep never gets
-    // edge0 == edge1 (undefined) if a huge sprite drives this toward zero under
-    // mediump.
-    float aa = clamp(0.75 * px, 0.002, 0.08);
+  float px = 1.0 / vSize;          // one device pixel, in point-coord units
+  // AA ramp: capped so big dots stay sharp, floored so smoothstep never gets
+  // edge0 == edge1 (undefined) if a huge sprite drives this toward zero under
+  // mediump.
+  float aa = clamp(0.75 * px, 0.002, 0.08);
 
-    // Filled disc, used directly in 3D and as the small-sprite fallback in 2D.
-    float discA = smoothstep(0.5, 0.5 - max(aa, 0.02), r);
+  // Filled disc, used directly in 3D and as the small-sprite fallback in 2D.
+  float discA = smoothstep(0.5, 0.5 - max(aa, 0.02), r);
 
-    if (uHollow > 0.5) {
-      float rOuter = 0.5 - aa;
-      // Half-stroke: >= 0.7 device px so the ring always resolves, and >= 3%
-      // of the sprite so large rings keep roughly the legacy proportion.
-      float t = max(0.7 * px, 0.03);
-      float rInner = max(rOuter - 2.0 * t, 0.06);
-      float ringA = clamp(
-        smoothstep(rOuter, rOuter - aa, r) - smoothstep(rInner, rInner - aa, r),
-        0.0, 1.0);
-      // 0 = too small for a ring, 1 = comfortably ringable.
-      float ringable = smoothstep(6.0, 10.0, vSize);
-      a = mix(discA, ringA, ringable);
-    } else {
-      a = discA;
-      float core = smoothstep(0.5, 0.3, r);
-      col = vColor.rgb * mix(0.85, 1.15, core);
-    }
+  if (uHollow > 0.5) {
+    float rOuter = 0.5 - aa;
+    // Half-stroke: >= 0.7 device px so the ring always resolves, and >= 3% of
+    // the sprite so large rings keep roughly their original proportion.
+    float t = max(0.7 * px, 0.03);
+    float rInner = max(rOuter - 2.0 * t, 0.06);
+    float ringA = clamp(
+      smoothstep(rOuter, rOuter - aa, r) - smoothstep(rInner, rInner - aa, r),
+      0.0, 1.0);
+    // Below ~6 px there is no room for a stroke plus two ramps plus a hole,
+    // so fade to a plain disc instead of showing a broken ring.
+    float ringable = smoothstep(6.0, 10.0, vSize);
+    a = mix(discA, ringA, ringable);
   } else {
-    if (uHollow > 0.5) {
-      float outer = smoothstep(0.50, 0.46, r);
-      float inner = smoothstep(0.40, 0.36, r);
-      a = max(outer - inner, 0.0);
-    } else {
-      a = smoothstep(0.50, 0.46, r);
-      float core = smoothstep(0.50, 0.30, r);
-      col = vColor.rgb * mix(0.85, 1.15, core);
-    }
+    a = discA;
+    float core = smoothstep(0.5, 0.3, r);
+    col = vColor.rgb * mix(0.85, 1.15, core);
   }
 
   if (a <= 0.0) discard;
@@ -323,7 +301,6 @@ function _init(gl: any) {
   _uPixelScale = gl.getUniformLocation(p, 'uPixelScale');
   _uOpacity   = gl.getUniformLocation(p, 'uOpacity');
   _uHollow    = gl.getUniformLocation(p, 'uHollow');
-  _uCrisp     = gl.getUniformLocation(p, 'uCrisp');
   _uNowDays   = gl.getUniformLocation(p, 'uNowDays');
   _uCatMask   = gl.getUniformLocation(p, 'uCatMask');
   _vbo = gl.createBuffer();
@@ -786,34 +763,6 @@ function _drawRings(renderContext: any, opacity: number, is3D: boolean) {
   if (_ring_aEndPx >= 0)   gl.disableVertexAttribArray(_ring_aEndPx);
 }
 
-// === CRISP MARKERS ==========================================================
-// Fixes 2D ring markers rendering as pixelated/broken circles, worst on phones.
-//
-// The old fragment shader sized its AA ramp and ring stroke as fractions of
-// the sprite (0.04 and 0.06). In 2D the sprite is only 6-10 device px, putting
-// the stroke at 0.36-0.60 px and the ramp at 0.24-0.40 px — both under one
-// pixel, so nothing could resolve. See the FRAG_SRC comment for the full
-// derivation. This flag also drops the Math.round() on the legacy size formula
-// below, which quantised the size to whole CSS px (3 device px steps at DPR 3)
-// and made dots pop between sizes while zooming.
-//
-// TO REVERT: set CRISP_MARKERS = false. Both shader paths are compiled in and
-// selected by the uCrisp uniform, so nothing else needs touching.
-// TO A/B AT RUNTIME (no rebuild — useful on a real phone over remote debug):
-//   window.__cloudCrisp = false   // legacy bands + rounded sizes
-//   window.__cloudCrisp = true    // pixel-anchored bands + smooth sizes
-//   delete window.__cloudCrisp    // back to the CRISP_MARKERS default
-// Related existing knobs: __cloudDotSize2D / __cloudDotSize3D (sprite size),
-// __cloudHollow2D / __cloudHollow3D (ring vs filled disc).
-const CRISP_MARKERS = true;
-
-/** Resolve the crisp-marker setting, honouring the runtime override. */
-function _crispEnabled(): boolean {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const o = (window as any).__cloudCrisp;
-  return (o === undefined) ? CRISP_MARKERS : !!o;
-}
-
 // === ADAPTIVE MARKER SIZE ===================================================
 // Per-mode zoom-adaptive scale applied to the screen-space dot size. The
 // shader still renders in screen space — dots stay constant size for a fixed
@@ -898,8 +847,6 @@ export function drawExoplanetCloud(renderContext: any, opacity: number) {
     ? ((w.__cloudDotSize3D as number | undefined) ?? sizeOverride ?? DEFAULT_DOT_SIZE_3D)
     : ((w.__cloudDotSize2D as number | undefined) ?? sizeOverride ?? DEFAULT_DOT_SIZE_2D);
 
-  const crisp = _crispEnabled();
-
   if (ADAPTIVE_MARKER_SIZE) {
     // New adaptive path — sub-pixel (no round), zoom-aware.
     const cfg = is3D ? MARKER_SCALE_3D : MARKER_SCALE_2D;
@@ -913,18 +860,16 @@ export function drawExoplanetCloud(renderContext: any, opacity: number) {
     const sizeMax = sizeForMode * 1.5;
     const b = (sizeMax - sizeMin) / 10;
     const a = sizeMax - b * 20;
-    const raw = a + b * Math.log(renderContext.viewCamera.zoom);
-    // Rounding here quantises to whole CSS px, i.e. 3 device px at DPR 3, so
-    // dots pop between sizes as you zoom. The shader now antialiases in real
-    // pixels, so a fractional size renders cleanly. (CRISP_MARKERS)
-    sizeForMode = crisp ? raw : Math.round(raw);
+    // Deliberately NOT rounded. Rounding quantises to whole CSS px, which is
+    // 3 device px at DPR 3, so dots visibly pop between sizes as you zoom. The
+    // shader antialiases in real pixels, so fractional sizes render cleanly.
+    sizeForMode = a + b * Math.log(renderContext.viewCamera.zoom);
   }
   const dpr = window.devicePixelRatio || 1;
   gl.uniform1f(_uPixelScale, sizeForMode * dpr);
   gl.uniform1f(_uOpacity, opacity);
   gl.uniform1f(_uNowDays, _nowDays);
   gl.uniform1f(_uCatMask, _catMask);
-  gl.uniform1f(_uCrisp, crisp ? 1.0 : 0.0);
 
   // Hollow vs filled: 2D defaults to hollow rings, 3D to filled discs.
   // Both individually overridable via window.__cloudHollow2D / 3D.
