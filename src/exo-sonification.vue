@@ -301,13 +301,16 @@
           <h2 class="tf-menu-title">Tuning Fork</h2>
           <p class="tf-menu-sub">Calibrate your ear, then choose where to go next.</p>
           <button class="tf-menu-btn" @click="runSolarDemo">
-            <i class="fas fa-globe"></i> Solar System <span class="tf-menu-hint">(replay)</span>
+            <i class="fas fa-globe"></i> Solar System
+            <span class="tf-menu-hint">{{ tfMenuHint('solar') }}</span>
           </button>
           <button class="tf-menu-btn" @click="runTrappistDemo">
             <i class="fas fa-circle" style="color:#ff5a32;"></i> TRAPPIST-1 System
+            <span class="tf-menu-hint">{{ tfMenuHint('trappist') }}</span>
           </button>
           <button class="tf-menu-btn" @click="runPerNoteDemo">
             <i class="fas fa-music"></i> One Planet Per Note
+            <span class="tf-menu-hint">{{ tfMenuHint('pernote') }}</span>
           </button>
           <button class="tf-menu-btn tf-menu-explore" @click="exitTuningFork">
             <i class="fas fa-rocket"></i> Explore the Exoplanets
@@ -582,9 +585,23 @@ const LOG_PERIOD_HI = Math.log(PERIOD_HI_DAYS);
 // Per-voice base gain. Timeline playback bins planets by pitch and sums into
 // one voice per bin at gain = BASE_TONE_GAIN * sqrt(count) (see
 // handlePointTransitions), so the worst-case voice count is bounded by the
-// number of distinct samples (NOTES_HIGH_TO_LOW.length = 20). Hover/search
-// fire a single voice at BASE_TONE_GAIN.
+// number of distinct samples (NOTES_HIGH_TO_LOW.length = 20). Search fires a
+// single voice at BASE_TONE_GAIN.
 const BASE_TONE_GAIN = 0.42;
+
+// Hover/reticle identify sonification. Deliberately quieter than a search
+// selection: hover fires incidentally as the cursor sweeps, so it should sit
+// under the explicit actions rather than compete with them.
+const HOVER_TONE_GAIN = 0.26;
+
+// Minimum gap between two hover-driven tones. updateLastClosePoint only fires
+// when the identified planet actually *changes*, but in a dense field (the
+// Kepler/TESS clumps are thousands of dots inside a few degrees) a single pan
+// changes the nearest planet on nearly every animation frame. Without this
+// floor that machine-guns a note per frame. 120 ms lets a deliberate hover
+// ring out one planet at a time while a fast sweep plays a sparse arpeggio
+// instead of a burst.
+const HOVER_TONE_MIN_MS = 120;
 
 // Parsec → AU. Used to feed real exoplanet distances into raDecTo3dAu so the
 // 3D-mode ping projection picks up the correct WWT world-space direction.
@@ -618,6 +635,25 @@ const TF_MENU_DELAY_MS = 1800;           // pause after last reveal before the m
 // fraction of the outermost orbit (larger = start further out / less zoomed in).
 const TF_FRAME_FACTOR = 3.0;     // camera distance as a multiple of the framed orbit radius
 const TF_START_FRACTION = 0.22;  // initial framing radius = TF_START_FRACTION · maxRadius
+
+// Aspect compensation for TF_FRAME_FACTOR. WWT's solar-system projection is
+// perspectiveFovLH(_fovLocal, width/height, …) with _fovLocal fixed at π/4
+// (RenderContext, engine index.js:47038) — i.e. the 45° FOV is *vertical*, and
+// the horizontal FOV narrows as the viewport gets taller than it is wide. An
+// orbit of radius R at camera distance D fits vertically when
+// D > R/tan(22.5°) = 2.414·R, and horizontally when D > 2.414·R·(h/w).
+//
+// TF_FRAME_FACTOR = 3.0 clears the vertical bound with ~24% margin, which is
+// why desktop 16:9 always looked right — but a portrait phone (390×844) needs
+// 5.22·R, so the demo was framing at 57% of the required distance and clipping
+// every orbit left and right. Scaling by max(1, h/w) makes the framing correct
+// on any aspect and is a no-op on landscape.
+function tfAspectPad(): number {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (!(w > 0) || !(h > 0)) { return 1; }
+  return Math.max(1, h / w);
+}
 
 // Per-demo runtime wrapper: the static orbit path (ecliptic-AU vertices, built
 // once) plus its activation state and the colour it flips to when sonified.
@@ -1161,6 +1197,10 @@ export default defineComponent({
       pendingHoverEvent: null as PointerEvent | null,
       hoverRafId: null as number | null,
 
+      // Timestamp of the last hover-driven tone, for the HOVER_TONE_MIN_MS
+      // rate limit in updateLastClosePoint.
+      lastHoverToneMs: 0,
+
       // Kiosk QR modal (external links + take-home QR route here in kiosk mode).
       showQrModal: false,
       qrUrl: "",
@@ -1198,6 +1238,9 @@ export default defineComponent({
       // === Tuning Fork === demo state (see startTuningFork / _tfTick).
       tfActive: false,
       tfMode: null as null | "solar" | "trappist" | "pernote",
+      // Demos played this session, so the next-steps menu can label the one
+      // that just ran as a replay and the untried ones as new (see tfMenuHint).
+      tfSeen: [] as ("solar" | "trappist" | "pernote")[],
       tfMenuOpen: false,
       tfTitle: "",
       tfStarColor: "#ffe08a",
@@ -1214,6 +1257,7 @@ export default defineComponent({
       tfLabelVisible: false,
       tfTargetZoom: 0,           // zoom we're easing toward (see _tfTick zoom-out)
       tfStartZoom: 0,            // initial (closest) framing — zoom never goes below this
+      tfMaxRadiusAU: 0,          // outermost orbit radius; re-framed on resize (_tfRefitFraming)
       tfCanvasW: 0,
       tfCanvasH: 0,
       tfResizeHandler: null as null | (() => void),
@@ -2523,10 +2567,20 @@ export default defineComponent({
         this.lastClosePt.ra != closestPt.ra ||
         this.lastClosePt.dec != closestPt.dec;
       if (needsUpdate) {
-        // Identify-only on hover/reticle: show the info popover, but do NOT
-        // sonify (no tone, no ping). Sonification is reserved for explicit
-        // actions — search selection and timeline playback. (mobile + desktop)
         this.lastClosePt = closestPt;
+        // Hover/reticle sonifies the planet under the cursor (desktop hover and
+        // the mobile reticle both land here). Rate-limited by HOVER_TONE_MIN_MS
+        // because in a dense field the nearest planet changes almost every
+        // frame while panning. Timeline playback owns the audio while it runs.
+        if (closestPt != null && !this.isPlaying) {
+          const now = performance.now();
+          const period = closestPt.plOrbper;
+          if (now - this.lastHoverToneMs >= HOVER_TONE_MIN_MS &&
+              Number.isFinite(period) && period > 0) {
+            this.lastHoverToneMs = now;
+            this.playPointTone(period, HOVER_TONE_GAIN);
+          }
+        }
       }
     },
 
@@ -2872,6 +2926,14 @@ export default defineComponent({
     runTrappistDemo() { this._beginDemo("trappist"); },
     runPerNoteDemo() { this._beginDemo("pernote"); },
 
+    // Label for a next-steps menu entry. Derived from tfMode/tfSeen rather than
+    // hardcoded, so whichever demo just finished is the one marked "(replay)"
+    // and only genuinely untried demos read as "(new)".
+    tfMenuHint(which: "solar" | "trappist" | "pernote"): string {
+      if (this.tfMode === which) { return "(replay)"; }
+      return this.tfSeen.includes(which) ? "(again)" : "(new)";
+    },
+
     _beginDemo(which: "solar" | "trappist" | "pernote") {
       // Kiosk usage stats: a guest choosing a tuning-fork demo is a signature
       // interaction (statsTrack already no-ops with no open kiosk session).
@@ -2879,6 +2941,7 @@ export default defineComponent({
       this._tfStopLoop();
       this.tfMenuOpen = false;
       this.tfMode = which;
+      if (!this.tfSeen.includes(which)) { this.tfSeen.push(which); }
 
       let src: TFBody[];
       if (which === "trappist") {
@@ -2935,13 +2998,11 @@ export default defineComponent({
       // control the star colour (red for TRAPPIST-1A) and the inside-out reveal.
       this.applySetting(["solarSystemPlanets", false]);
 
-      // End-of-demo framing (all orbits in view); the zoom-out in _tfTick eases
-      // toward this as outer bodies are revealed.
-      this.tfTargetZoom = (9 / 4) * Math.max(2.5, maxRadiusAU * TF_FRAME_FACTOR);
-      // Start zoomed in on the inner orbits, then slowly pull back (see _tfTick).
-      const startCamDistAU = Math.max(2.5, maxRadiusAU * TF_START_FRACTION * TF_FRAME_FACTOR);
-      const startZoom = (9 / 4) * startCamDistAU;
-      this.tfStartZoom = startZoom;
+      // Remember the radius so _tfRefitFraming can re-derive the zooms if the
+      // viewport changes shape mid-demo (phone rotation).
+      this.tfMaxRadiusAU = maxRadiusAU;
+      this._tfRefitFraming();
+      const startZoom = this.tfStartZoom;
 
       const rc = this.wwtRenderContext;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2969,6 +3030,22 @@ export default defineComponent({
       gotoTargetFullHacked(this.wwtControl, false, false, params, fg, bg, TF_SLEW_SEC);
     },
 
+    // Derive tfStartZoom / tfTargetZoom from the framed radius and the current
+    // viewport aspect. Split out of _tfEnterView so a resize (phone rotation)
+    // can re-fit without re-slewing: _tfTick reads both fields every frame, so
+    // updating them in place makes the pull-back continue against the new
+    // framing rather than stranding orbits off-screen.
+    _tfRefitFraming() {
+      const maxRadiusAU = this.tfMaxRadiusAU;
+      if (!(maxRadiusAU > 0)) { return; }
+      const frameFactor = TF_FRAME_FACTOR * tfAspectPad();
+      // End-of-demo framing (all orbits in view); the zoom-out in _tfTick eases
+      // toward this as outer bodies are revealed.
+      this.tfTargetZoom = (9 / 4) * Math.max(2.5, maxRadiusAU * frameFactor);
+      // Start zoomed in on the inner orbits, then slowly pull back (see _tfTick).
+      this.tfStartZoom = (9 / 4) * Math.max(2.5, maxRadiusAU * TF_START_FRACTION * frameFactor);
+    },
+
     _tfSetupCanvas() {
       const cv = this.$refs.tfCanvas as HTMLCanvasElement | undefined;
       if (!cv) return;
@@ -2982,7 +3059,12 @@ export default defineComponent({
       const ctx = cv.getContext("2d");
       if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       if (!this.tfResizeHandler) {
-        this.tfResizeHandler = () => this._tfSetupCanvas();
+        this.tfResizeHandler = () => {
+          this._tfSetupCanvas();
+          // Aspect may have flipped (portrait ↔ landscape) — re-fit the zoom
+          // framing so the orbits stay inside the narrower axis.
+          this._tfRefitFraming();
+        };
         window.addEventListener("resize", this.tfResizeHandler);
       }
     },
