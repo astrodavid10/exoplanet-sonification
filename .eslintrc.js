@@ -1,5 +1,13 @@
 module.exports = {
   root: true,
+  // Superseded files kept in the tree for reference. They are not imported by
+  // anything (src/main.ts pulls in exo-sonification.vue) and predate the rules
+  // below, so linting them only produces noise.
+  ignorePatterns: [
+    'src/exo-sonification_orig.vue',
+    'src/data.ts',
+    'src/newdata.ts',
+  ],
   parser: 'vue-eslint-parser',
   parserOptions: {
     parser: '@typescript-eslint/parser',
@@ -57,6 +65,12 @@ module.exports = {
       }
     ],
     "@typescript-eslint/semi": "error",
-    "vue/multi-word-component-names": "off"
+    "vue/multi-word-component-names": "off",
+    // Diagnostics (shader link failures, audio decode errors, engine warnings)
+    // are worth shipping; console.log is almost always leftover debugging. The
+    // deliberate console-driven debug helpers (logLayerData, the
+    // window.__pingDebug / window.__gx* knobs) opt back in with a local
+    // eslint-disable so the intent is explicit at the call site.
+    "no-console": ["error", { allow: ["warn", "error"] }]
   }
 };
