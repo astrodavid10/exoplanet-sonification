@@ -26,11 +26,17 @@ jobs:
         run: python generate_exoplanet_data.py
 
       # ── Commit updated data file (no-op if nothing changed) ──────────────
+      # generate_exoplanet_data.py writes TWO files: src/exoplanetData.ts and
+      # the planet count in the intro modal inside src/exo-sonification.vue.
+      # Listing only the data file here silently dropped the count update, so
+      # the deployed intro drifted out of sync with the catalog.
       - uses: stefanzweifel/git-auto-commit-action@v5
         id: commit
         with:
           commit_message: "chore: update exoplanet data from NASA archive"
-          file_pattern: src/exoplanetData.ts
+          file_pattern: |
+            src/exoplanetData.ts
+            src/exo-sonification.vue
 
       # ── Build (only runs if the data file actually changed) ──────────────
       - uses: actions/setup-node@v4
@@ -38,9 +44,17 @@ jobs:
         with:
           node-version: '20'
 
+      # This project is on Yarn 4 (packageManager: yarn@4.14.1, lockfile v9).
+      # Corepack is what provides that binary; without it the runner's bundled
+      # Yarn 1 runs against a v9 lockfile. --immutable is the Yarn 2+ spelling
+      # of --frozen-lockfile, which was removed after Yarn 1.
+      - name: Enable Corepack
+        if: steps.commit.outputs.changes_detected == 'true'
+        run: corepack enable
+
       - name: Install JS deps
         if: steps.commit.outputs.changes_detected == 'true'
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
 
       - name: Build
         if: steps.commit.outputs.changes_detected == 'true'
