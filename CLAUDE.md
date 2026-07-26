@@ -8,16 +8,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 npm run serve      # local dev server
 npm run build      # Python preprocessing + webpack production build
 npm run lint       # ESLint (no autofix)
+npm run typecheck  # tsc --noEmit
 npm run clean      # remove dist/
 ```
 
-The build runs `python modify_index.py` before webpack. If the Python step fails, run it manually first.
+Package manager is **Yarn 4** (`packageManager: yarn@4.14.1`, lockfile v9) — use `corepack enable` and `yarn install --immutable`, not Yarn 1 flags like `--frozen-lockfile`.
 
-Optional local audio server (SF2/SoundFont playback for development):
-```bash
-pip install -r requirements.txt
-python play_point_server.py   # serves http://127.0.0.1:8000/play-point
-```
+The build runs `python modify_index.py` before webpack, which patches a line out of `node_modules/@wwtelescope/engine/src/index.js`. If the Python step fails, run it manually first. (`patch.sh` does the same job via `sed` and is no longer wired into any script.)
+
+`npm run typecheck` is meaningful — `src/shims-vue.d.ts` provides the `*.vue` wildcard declaration. Note the repo-root `shims-vue.d.ts` is inert: it is entirely commented out **and** sits outside `tsconfig.json`'s `include`.
 
 Regenerate exoplanet data from NASA (also runs weekly via CI):
 ```bash
@@ -39,12 +38,14 @@ An interactive visualization of ~6,000 known exoplanets rendered in WorldWide Te
 ### Key files
 | File | Role |
 |------|------|
-| `src/exo-sonification.vue` | Entire app: WWT integration, audio, UI, layer management (~3,500 lines) |
-| `src/exoplanetData.ts` | CSV data as named string exports (~6,000+ lines) |
+| `src/exo-sonification.vue` | Entire app: WWT integration, audio, UI, layer management (~4,900 lines) |
+| `src/exoplanetData.ts` | CSV data as named string exports (~6,300 planets) |
 | `src/wwt-hacks.ts` | Runtime monkey-patches to the WWT engine (zoom clamping, sky overlays, spreadsheet layer drawing, Milky Way sizing, tile sharpness) |
-| `src/galaxy3d.ts` | Procedural 3D point-cloud Milky Way for solar-system mode (replaces 2D bar in 3D) |
+| `src/exoplanet-renderer.ts` | Custom WebGL dot + ring renderer replacing WWT's `SpreadSheetLayer` sprites (see `EXOPLANET_RENDERER_PLAN.md`) |
+| `src/galaxy3d.ts` + `galaxy-{frame,atlas,structure,sprites,debug}.ts` | v3 3D Milky Way for solar-system mode: texture volume slices + instanced sprite clouds. **Not** a point cloud — see the section below |
 | `src/tuningForkData.ts` | Tuning-fork demo data + orbital math (solar-system Keplerian elements, TRAPPIST-1, one-popular-planet-per-note, Kepler solver, ecliptic-AU positions) |
-| `src/main.ts` | App bootstrap — mounts the component, registers WWT pinia store, Vuetify, FontAwesome |
+| `src/kiosk.ts`, `kioskStats.ts`, `KioskQrModal.vue`, `KioskStatsPanel.vue`, `urlParams.ts` | Kiosk mode: idle/attract loop, browser guards, take-home QR, local-only usage stats |
+| `src/main.ts` | App bootstrap — mounts the component (or the stats panel under `?kioskStats=1`), registers WWT pinia store, Vuetify, FontAwesome |
 | `generate_exoplanet_data.py` | NASA data fetcher / `src/exoplanetData.ts` regenerator |
 | `public/hips-surveys.wtml` | Local copy of the WWT HIPS survey collection with all tile URLs rewritten to HTTPS (required for production — the upstream file uses `http://` tile URLs blocked as mixed content on HTTPS hosts) |
 | `.github/workflows/update-exoplanet-data.yml` | Weekly cron + manual dispatch: runs `generate_exoplanet_data.py`, auto-commits if data changed, builds and SCP-deploys |
@@ -66,16 +67,45 @@ Three tuning constants near the top of the Milky Way section:
 
 **Important**: Scaling the WWT world matrix does NOT change the apparent size of the galaxy image because the camera is at the origin — scaling all vertices from the origin preserves angular separations. `_patchGalaxyVertexBuffer` instead rebuilds the WebGL vertex buffer once (on first draw) with the lat/lng extents multiplied by `MW_ANGLE_SCALE`, using the same rotation transforms and UV layout as WWT's `_createGalaxyImage`. The lat iteration must run **-64 → +64** as y1 goes 0 → subdivs to match WWT's (counterintuitively-named) convention — reversing this flips the image 180°.
 
-### Procedural 3D Milky Way (galaxy3d.ts)
-In **solar-system (3D) mode only**, `installGalaxy3D()` overrides `Grids.drawGalaxyImage` with a procedural point-cloud renderer. The 2D edge-on bar from `wwt-hacks.ts` still runs in sky (2D) mode — the engine only calls `drawGalaxyImage` from the solar-system render path, so the two implementations don't conflict. To remove the feature, delete `src/galaxy3d.ts` and the two blocks marked `// === Galaxy3D ===` in `exo-sonification.vue`.
+### 3D Milky Way — "v3 ensemble" (galaxy3d.ts + galaxy-*.ts)
 
-**Components**: thin disk + thick disk + bulge + tilted bar + four logarithmic spiral arms + halo, plus a 3D dust-cloud field (~320 desktop / ~140 mobile ellipsoids) that carves dark veins by attenuating or rejecting stars in the disk midplane along arm tangents. All structural numbers (R₀=8.2 kpc, scale heights/lengths, arm pitch 12°, bar PA −27° in our internal frame) are at the top of the file. Population fractions sum to 1.0 across `FRAC_THIN/THICK/BULGE/BAR/HALO`.
+> Historical note: an earlier **v2** implementation was a 1.5M-point `PointList` star cloud with `STAR_SIZE_AU` / `ARM_BOOST` / `DUST_CLOUDS_DESKTOP` knobs and `FRAC_THIN/THICK/BULGE/BAR/HALO` population fractions. **None of that is in this repo** — it survives only as an archive in the sibling JWST project (`_reference/galaxy3d-v2-pointcloud.ts`). If you are looking for a `PointList`, there isn't one.
 
-**Particle budget**: adaptive — desktop renders ~1.5M points, mobile ~100k, gated by `(pointer: coarse)`. The full PointList is built lazily on first 3D draw, takes a few seconds on desktop, then is cached. `rebuildGalaxy3D()` clears the cache (e.g. after a tier change).
+In **solar-system (3D) mode only**, the Milky Way is drawn as a *textured volume-slice stack plus instanced sprite clouds*. The engine calls `Grids.drawGalaxyImage` only from the solar-system render path (guarded by `solarSystemMilkyWay && milkyWayBlendIn > 0`), so the 2D edge-on quad in `wwt-hacks.ts` and this renderer never conflict.
 
-**Coordinate convention** (matches `galaxy3d.ts:galacticToWorldAU`): galactocentric Cartesian with the **Sun at (−R₀, 0, 0)**, +X heliocentric pointing toward the GC, +Z toward the NGP. The bar PA is measured in this frame, so the sign convention is opposite the IAU heliocentric one — see comment on `BAR_PA_RAD`. The Y/Z swap before `rotateX(ecliptic)` is required to match WWT's non-standard ICRS Cartesian (see WWT integration footgun above); without it the disk renders 90° off and exoplanet fields like Kepler (Cygnus) fall off the galactic plane.
+**Six files, all live** (none is dead code):
 
-**Tuning**: `STAR_SIZE_AU` is the most likely visual knob; bump up to make individual points more luminous. `ARM_BOOST` (default 4) controls arm contrast vs. interarm density. `DUST_CLOUDS_DESKTOP` controls dust-lane density. `GALAXY3D_ENABLED = false` disables the feature without uninstalling.
+| File | Role |
+|------|------|
+| `galaxy-frame.ts` | Pure math. The single source of truth for the MW frame: `MW_UNIT_AU` (6.08e7), `GC_OFFSET_UNITS` (28), `MW_ANGLE_SCALE` (1.05), `R0_KPC` (8.2), plus `imageUnitsToWorld()` / `galaxyPlaneToWorld()`, which apply the exact `rotY(213°)·rotZ(−62.87175°)·rotY(−192.8595083°)·rotX(ε)` chain. **`wwt-hacks.ts:_patchGalaxyVertexBuffer` imports from here** so the fallback quad and the slice stack cannot desync. |
+| `galaxy-atlas.ts` | Paints an 8-cell sprite atlas (glow / 3 puffs / 2 dust / HII / star) onto an offscreen canvas at runtime via value-noise fbm. Zero shipped image assets. |
+| `galaxy-structure.ts` | Placement model, deterministic (mulberry32). 5-arm Reid+2019 log-spiral table, bulge, inter-arm, HII knots, arm-edge dust. No GL. |
+| `galaxy-sprites.ts` | Instanced-billboard renderer (36-byte instances, WebGL2 or `ANGLE_instanced_arrays`). Dust pass multiplies, glow pass adds. |
+| `galaxy3d.ts` | Orchestrator + the slice-stack renderer. Owns `drawGalaxyEnsemble` and `ensembleHandlesBasePlane`. |
+| `galaxy-debug.ts` | `gl.LINES` overlay of arm centerlines / bar outline / Sun marker, gated on `window.__gxDebugArms`. |
+
+**Wiring (footgun)**: `installGalaxy3D()` is an **empty no-op**, kept only for API compatibility — calling it does nothing. The real hook is in `wwt-hacks.ts:drawGalaxyImage`, which asks `ensembleHandlesBasePlane()` and either calls `drawGalaxyEnsemble()` or falls through to WWT's original quad + `_patchGalaxyVertexBuffer`. `rebuildGalaxy3D` and `GALAXY3D_ENABLED` are exported but imported by nobody; `window.__gxRebuild` is only assigned inside `init()`, so calling it before the first 3D draw throws.
+
+**Budget** (tiered on `(pointer: coarse)`, evaluated once at module import):
+
+| | slices | subdivs | sprites | atlas |
+|---|---|---|---|---|
+| Desktop | 11 (from `SLICE_HEIGHTS_DESKTOP_KPC` = [0.12, 0.28, 0.5, 0.85, 1.5]) | 24 | 3,540 (2,840 glow + 700 dust) | 1024×512 (~2 MB) |
+| Mobile | 5 (`[0.2, 0.7]`) | 16 | 1,320 | 512×256 |
+
+Geometry is trivial (~242 KB VBO desktop, one `drawElements`); **per-frame cost is fill rate**, from near-fullscreen slices with depth-test off plus large billboards.
+
+**Startup cost (the thing to know)**: `buildGalaxyAtlas` is a synchronous fbm paint — desktop is 524,288 pixels × ~22 octave passes ≈ **1.4M noise evaluations in one uninterruptible task**. `mounted()` schedules `prewarmGalaxySprites()` on a macrotask (`setTimeout(…, 0)`) to get it off the critical path *before* the first 3D draw. It deliberately does **not** use `requestIdleCallback` — that is what the JWST original does, and it works there because JWST starts in 2D; **this app starts in 3D** (`let mode = "3D"` at module scope), so an idle callback can lose the race against the Gaia texture and the whole paint then runs lazily inside a render frame during startup. If you need it cheaper still, drop desktop `cellPx` from 256 → 128 in `galaxy-sprites.ts:computeGeometry` (4× less work).
+
+`build()` releases the CPU-side atlas canvas and instance `ArrayBuffer`s once they are uploaded; `prewarmGalaxySprites()` therefore checks `built` as well as `cachedAtlas`.
+
+**Known gap**: there is no GL teardown. Programs, buffers, and the atlas texture (~2.5 MB GPU) are allocated on first 3D entry and never released — the `modeReactive` watcher cleans up every other subsystem but not this one. Also, the slices have a camera-proximity fade and a radial vignette that the **sprites do not**, so flying into the disk fills the screen with sprite fog exactly as the slices correctly fade out.
+
+**Runtime knobs** (all read from `window`, documented at `galaxy3d.ts:25-40`): `__gx` (kill switch), `__gxExposure`, `__gxThickness`, `__gxTier` (`"mobile"`/`"desktop"`), `__gxRebuild()`, `__gxSpritesOff`, `__gxDust`, `__gxSprites`, `__gxSpriteSize`, `__gxArmGradient`, `__gxSeed`, `__gxDebugArms`, `__gxArmPhase`, `__gxArmFlip`, plus the read-only `__gxSpriteInfo()` diagnostic.
+
+**Compile-time tuning**: `SLICE_GAIN_DESKTOP` (3.0) / `SLICE_GAIN_MOBILE` (1.1) — hand-calibrated on-device, deliberately asymmetric because the mobile stack's low-sitting slices pass ~2× more light per unit weight. Slice heights/subdivs above them. Sprite counts are the `DESKTOP`/`MOBILE` `Counts` in `galaxy-structure.ts`. `INCLUDE_MOLECULAR_RING` is gated `false` pending an eyeball check. `GALAXY3D_ENABLED = false` disables the feature without uninstalling.
+
+**Dangling doc references**: every one of these files cites `GALAXY3D_PLAN.md`, and several cite `HANDOFF.md`, `_reference/`, `footprints.ts`, `marker-renderer.ts`, or `cosmosweb-field.ts`. **None of those exist in this repo** — they live in the JWST project this code was ported from.
 
 ### Tile sharpness (wwt-hacks.ts)
 **`TILE_QUALITY_SCALE`** (module-level export):
@@ -167,7 +197,15 @@ The `point-testing-3d` reference harness (rectangular layer with `set_xAxisColum
 
 **Pitch mapping (`pitchIndexForPeriod` + `NOTES_HIGH_TO_LOW` at module scope)**: orbital period (days) maps to one of 20 guitar samples, **short period → high pitch**, long period → low pitch. The mapping is **log-spaced** over `PERIOD_LO_DAYS` (1) to `PERIOD_HI_DAYS` (10000), because the catalog distribution is heavily skewed toward 1–30 d hot Jupiters / Kepler short-period planets — a linear mapping saturates the highest note and wastes the rest. `NOTES_HIGH_TO_LOW[0]` = `eguitar_GSharp6.wav`, `[19]` = `eguitar_E1.wav`. To rebalance, adjust `PERIOD_LO_DAYS` / `PERIOD_HI_DAYS`; to change the pitch direction, reverse the array.
 
-**Hover/reticle is identify-only (no sonification)**: hovering/reticle-probing a planet shows the info popover but deliberately does **not** play a tone or fire a ping — `updateLastClosePoint` only sets `lastClosePt`. Sonification (tone + ping) is reserved for explicit actions: **search selection** (`selectSearchResult`) and **timeline playback** (`handlePointTransitions`), each of which calls `playPointTone(plOrbper)` + `spawnPing`/`spawnPing3D` itself. This applies to both desktop hover and the mobile reticle. (Historical note: hover used to sonify, and earlier still passed a synthetic `gdist`-derived value as `plOrbper`; both behaviors are gone.) `updateLastClosePoint` also early-returns while a tuning-fork demo is active so the demo owns the popover.
+**Hover/reticle sonification**: hovering a planet (desktop) or ringing one in the reticle (mobile) shows the info popover **and plays its orbital-period tone** — this is what both in-app help entries promise. `updateLastClosePoint` fires the tone inside its existing `needsUpdate` branch.
+
+Two guards matter and neither is optional:
+- **`HOVER_TONE_MIN_MS` (120 ms) rate limit**, tracked via `lastHoverToneMs`. The `needsUpdate` check alone is not enough: in the Kepler/TESS clumps the *nearest* planet changes on nearly every animation frame while panning, which would fire a note per frame.
+- **`!this.isPlaying`** — timeline playback owns the audio while it runs.
+
+Hover plays at `HOVER_TONE_GAIN` (0.26), deliberately below `BASE_TONE_GAIN` (0.42) used by search selection and playback, so incidental hover sits under explicit actions. Hover does **not** fire a ping — pings remain reserved for search selection (`selectSearchResult`) and timeline playback (`handlePointTransitions`). `updateLastClosePoint` also early-returns while a tuning-fork demo is active (the demo owns the popover) and while `popupPinned` is set.
+
+(Historical note: an earlier revision passed a synthetic `gdist`-derived value as `plOrbper`; that is gone — the real orbital period is used.)
 
 ### Timeline playback
 `ALL_POINTS_BY_DATE` is pre-sorted by `discPubdate` so `handlePointTransitions` only scans the current month's window (O(M) per tick, not O(N total)). The play loop (`startPlay` → `setInterval` at 200 ms) calls `onSliderInput` → `handlePointTransitions`.
@@ -180,9 +218,9 @@ The `point-testing-3d` reference harness (rectangular layer with `set_xAxisColum
 `getDeviceScales(twoD)` (module-level helper) returns scale factors based on `window.matchMedia('(pointer: coarse)')` and `window.devicePixelRatio`. Called both at layer creation and in `updateLayerScales()` (triggered on every 2D/3D mode switch). Keep both call sites in sync when changing scale values.
 
 ### Mobile reticle
-On touch devices, a reticle overlay triggers `updateLastClosePoint` for whatever planet is under it. The toggle button is `position: absolute; bottom: 20%; right: 1rem` inside `#main-content` (moved out of the hamburger container to avoid layout conflicts). The reticle is available in **both 2D and 3D modes** — `wwtOnPointerMove` calls `updateLastClosePoint` with a screen-position override when `mobile && reticleEnabled`, regardless of mode, and `closestInView` handles the per-point projection in 3D. In 3D the ping is fired via `spawnPing3D` and the popover label appears at the same fixed bottom-center position used in 2D.
+On touch devices, a reticle overlay triggers `updateLastClosePoint` for whatever planet is under it. The toggle button is `position: absolute; bottom: 20%; right: 1rem` inside `#main-content` (moved out of the hamburger container to avoid layout conflicts).
 
-**Reticle position differs by mode**: in 2D the reticle sits at screen center (`top: 50%`). In 3D the camera rotates *about* the screen center, so a dead-center reticle is unreachable — points orbit around it instead of crossing it. The 3D reticle is offset to `top: 66%` (CSS class `.reticle-3d`) and the identify probe coordinates passed to `updateLastClosePoint` use `window.innerHeight * RETICLE_3D_Y_FRAC` (= 0.66) for `y`. Keep `RETICLE_3D_Y_FRAC` in `exo-sonification.vue` and the `.reticle-3d { top }` rule in sync if either is changed.
+**The reticle is 2D-only.** Both the toggle button and the overlay are gated `v-if="mobile && modeReactive !== '3D'"`, and `_runHoverIdentify` additionally checks `&& !is3D` so a lingering `reticleEnabled` cannot fire an identify after a mode switch. (An earlier revision did support the reticle in 3D, with a `top: 66%` offset because the camera rotates *about* screen center making a dead-center reticle unreachable. That code is gone; `closestInView` still handles 3D projection for desktop hover.)
 
 Mobile hover via direct tap (without the reticle) is not yet implemented — Option A (tap-to-reveal via `pointerup` with `pointerType === 'touch'`) is recommended when adding it.
 
@@ -194,9 +232,38 @@ Three "calibrate your ear" demos reached from a second splash-screen button (**S
 - **Coordinate footgun (the key one)**: positions are heliocentric **ecliptic** J2000 Cartesian AU. `_tfProject` calls a plain `WWTControl.singleton.getScreenPointForCoordinates(xe, ye, ze)` — **no** RA/Dec round-trip and **no** `rotateX(ecliptic)`. **In the installed engine version, `getScreenPointForCoordinates` does NOT swap its args in solar-system mode** — it builds `Vector3d.create(x, y, z)` (engine `index.js:68289`), so the world vertex is exactly `(xe, ye, ze)` and the orbital plane is the world **XY plane** (z≈0), with the ecliptic pole = world **+Z** axis. (An older engine build swapped args 2/3 — `Vector3d(x, z, y)` — which is what the now-corrected historical notes elsewhere in this file describe; verify the engine source if projections ever land off.)
 - **Top-down view (footgun)**: `setupMatricesSolarSystem` places the camera at `viewAdjust·(0,0,camDist)` where `viewAdjust = rotX(-lat)·rotY(-lng)`. Because the orbits lie in the world XY plane (above), a **top-down** view (camera on the world +Z axis, looking straight down the ecliptic pole) is `lat = 0, lng = 0` — *not* `lat = 90`, which puts the camera on the world Y axis and renders the rings **edge-on**. `_tfEnterView` sets `lat=0, lng=0, rotation=0, angle=0` for all three demos.
 - **Zoom clamp + smooth pull-back**: the app pins solar-system `minZoom = 30000` (≈13,333 AU min camera distance) to keep exoplanets navigable — far too far to see tens-of-AU orbits. `_tfEnterView` temporarily calls `setSolarSystemMinZoom(1)`, hides WWT's sprites, and slews (`gotoTargetFullHacked`, `viewTarget = origin`, `target = 20`) to a **close** start zoom framing the inner orbits (`tfStartZoom = (9/4)·maxR·TF_START_FRACTION·TF_FRAME_FACTOR`). Then `_tfTick` performs the pull-back as **one smooth continuous motion**: `viewCamera.zoom` is set each frame as a pure function of elapsed time across the reveal window — `zoom = tfStartZoom + (tfTargetZoom − tfStartZoom)·smootherstep(t)` where `t = (now − tfRevealBaseMs) / ((bodies−1)·TF_REVEAL_INTERVAL_MS)` clamped to [0,1] and `tfTargetZoom = (9/4)·maxR·TF_FRAME_FACTOR` (all orbits framed). This deliberately does **not** track per-reveal radii (an earlier version stepped the zoom out each time a body revealed, which read as little increments instead of a glide). `_tfHardStop` restores `minZoom`. Note: the render loop reads `viewCamera.zoom` directly with no clamp, so per-frame assignment is safe.
+
+- **Aspect-ratio framing (footgun)**: WWT's solar-system projection is `perspectiveFovLH(_fovLocal, width/height, …)` with `_fovLocal` **fixed at π/4** — so the 45° FOV is *vertical*, and the horizontal FOV narrows as the viewport gets taller than it is wide. An orbit of radius R at camera distance D fits vertically when `D > R/tan(22.5°) = 2.414·R`, but horizontally only when `D > 2.414·R·(h/w)`.
+
+  A bare `TF_FRAME_FACTOR = 3.0` clears the vertical bound with ~24% margin, which is why desktop 16:9 always looked correct — but a 390×844 phone needs **5.22·R**, i.e. portrait was framing at 57% of the required distance and clipping every orbit left and right. Both zooms are therefore scaled by `tfAspectPad()` = `max(1, innerHeight/innerWidth)`, a no-op in landscape.
+
+  The derivation lives in `_tfRefitFraming()`, split out of `_tfEnterView` so the resize handler can re-fit on orientation change without re-slewing — `_tfTick` reads `tfStartZoom`/`tfTargetZoom` every frame, so updating them in place lets a mid-demo rotation continue the pull-back against the new framing. `tfMaxRadiusAU` is stored for that re-derivation.
 - **Render/animation**: a full-screen `<canvas ref="tfCanvas">` (z-index 18, just under `.ping-layer`) redrawn each rAF frame in `_tfDraw`. `_tfTick` advances a sim clock from the current date at `TF_TIME_SCALE_DAYS_PER_SEC` (Earth ≈ 6 s/orbit) and reveals bodies every `TF_REVEAL_INTERVAL_MS` after a `TF_SLEW_MS` camera-arrival delay; each `_tfActivate` fires a ping (reusing the `pings` array) on the body and `playPointTone(periodDays)`. `_tfHardStop` (called by `exitTuningFork` and the `modeReactive` watcher guard for any switch to 2D mid-demo) cancels the loop, removes the resize listener, and restores engine state.
 - **Demo UI / chrome**: the body name appears in `#tf-popover` — styled identically to the hover identify popup (`#circle-popover`): fixed bottom-centre, `--current-color` = the body's activation colour, two lines (name + discovery-method/period detail). It does **not** track the body on screen. `_beginDemo` collapses the Discovery Types chrome (`showCatalog = showCatalogButton = false`); `_tfHardStop` restores it. The **Exit** button (`.tf-exit-btn`) sits top-**left** (the catalog slot, now free) styled like `.catalog-button`, so it never overlaps the hamburger (top-right). The title (`.tf-title`) is a centred top-row chip styled like the app chrome.
-- **Tuning knobs**: `TUNING_FORK_BLUE`, `TF_REVEAL_INTERVAL_MS`, `TF_TIME_SCALE_DAYS_PER_SEC`, `TF_SLEW_SEC`, plus the zoom-framing pair `TF_FRAME_FACTOR` / `TF_START_FRACTION` (larger `TF_START_FRACTION` = start further out / less zoomed in) in `exo-sonification.vue`; ring spacing (`inner`/`step` in `stylizedRing`) and the curated planet list in `tuningForkData.ts`. Note: under the shared exoplanet pitch mapping (cap 10,000 d) Saturn→Eris all play the lowest note (only 2.56% of exoplanets exceed 10,000 d, so this is faithful); to give outer bodies distinct pitches, widen `PERIOD_HI_DAYS`.
+- **Menu labels**: the next-steps menu derives its `(replay)` / `(again)` / `(new)` hints from `tfMode` + `tfSeen` via `tfMenuHint(which)`, so whichever demo just finished is the one marked as the replay.
+- **Tuning knobs**: `TUNING_FORK_BLUE`, `TF_REVEAL_INTERVAL_MS`, `TF_TIME_SCALE_DAYS_PER_SEC`, `TF_SLEW_SEC`, plus the zoom-framing pair `TF_FRAME_FACTOR` / `TF_START_FRACTION` (larger `TF_START_FRACTION` = start further out / less zoomed in; note both are multiplied by `tfAspectPad()` at use) in `exo-sonification.vue`; ring spacing (`inner`/`step` in `stylizedRing`) and the curated planet list in `tuningForkData.ts`. Note: under the shared exoplanet pitch mapping (cap 10,000 d) Saturn→Eris all play the lowest note (only 2.56% of exoplanets exceed 10,000 d, so this is faithful); to give outer bodies distinct pitches, widen `PERIOD_HI_DAYS`.
+
+### Kiosk mode (`kiosk.ts`, `kioskStats.ts`, `KioskQrModal.vue`, `KioskStatsPanel.vue`, `urlParams.ts`)
+
+An unattended museum-touchscreen mode, off by default and entirely opt-in via query string.
+
+**URL parameters** (parsed by `urlParams.ts`; `boolParam` treats *any* value except `"0"`/`"false"` as true):
+
+| Param | Effect |
+|-------|--------|
+| `?kiosk=1` | Enables kiosk mode — passed as the `kioskMode` prop in `main.ts` |
+| `?kioskStats=1` | Mounts `KioskStatsPanel` **instead of** the viewer (no WWT/pinia/vuetify boot) |
+| `?kioskIdle=<seconds>` | Overrides `KIOSK_IDLE_MS` (default 90 s) for testing |
+
+**Attract loop**: `createIdleWatcher` listens in capture phase for `pointerdown`/`keydown`/`wheel`/`touchstart`/`pointermove` and polls every 5 s. On idle → `enterAttract()` ends the stats session, calls `resetKioskView()`, then after a 3 s settle starts touring `KIOSK_ATTRACT_POOL` (the same 20 curated planets as the One-Per-Note demo) via `selectSearchResult`, pacing each step off `lastSlewMs`.
+
+Two state flags, both load-bearing: **`attractMode`** (tour running) and **`attractPending`** (inside the 3 s settle). `pointermove` deliberately bumps the watcher's activity timestamp *without* calling `onActive`, which means `onIdle` can fire again from a merely hovering hand — `enterAttract` guards on both flags to avoid re-entering mid-tour, and `onKioskActivity` checks both so a guest touching during the settle window cancels the tour instead of having it start on top of them.
+
+**Take-home QR**: `kioskHomeUrl` in `main.ts` must be an **absolute** URL — currently `https://projects.cosmicds.cfa.harvard.edu/exoplanet-sonification/`. An empty value falls back to `urlWithoutParams(...)`, which on an exhibit machine yields the localhost/LAN address the guest's phone cannot reach. In kiosk mode `openLink()` also short-circuits every external link into the same QR modal rather than navigating away.
+
+**Stats** (`kioskStats.ts`): anonymous, local-only, no network. `localStorage` key `kioskStats:v1`, **per-day rollups only** (no raw event log), capped at `MAX_DAYS = 90`, flushed every 60 s plus on `pagehide`/`visibilitychange`. A "session" is first-touch → idle-reset; `statsTrack` no-ops unless a session is open, so the attract loop cannot inflate the numbers. `statsInit` is idempotent and **returns a teardown** that the component holds in `kioskCleanups`. `readStore` is exported and must be used rather than reimplemented — `JSON.parse("null")` succeeds and returns `null`, so a naive copy lets that escape into `Object.keys(...)`.
+
+**Known gaps**: `DayRollup.planets` is keyed by planet name with no cap (a busy day could accumulate thousands of keys, and on quota exhaustion `flush()` swallows the error and stats silently stop); `?kioskStats=1` is unauthenticated (low risk — the kiosk guards block URL editing, and on the public site localStorage is empty); `KIOSK_QR_AUTOCLOSE_MS` in `kiosk.ts` is dead (`KioskQrModal.vue` hardcodes `45000` separately); the five `KIOSK_ATTRACT_3D_*` constants describe a zoom-out interlude that was never implemented. The whole feature ships in the main bundle for every visitor — there is no lazy `import()`.
 
 ---
 
@@ -214,5 +281,13 @@ Three "calibrate your ear" demos reached from a second splash-screen button (**S
 
 - **Crossfade opacity state on return**: When a user opens Sky Survey, adjusts the slider, then switches to 3D and back to 2D, `fg2DOpacity` is restored but the first-open animation guard (`skySurveySelectedCount`) prevents re-animating. This is correct behavior but worth noting if the intro animation ever needs resetting.
 
-- **Mobile tap-to-identify in 3D (no reticle)**: The reticle now works in 3D, but mobile users without the reticle still have no way to identify a 3D dot via a single tap. Same Option A as the 2D version (`pointerup` with `pointerType === 'touch'`, guarded by `!isPointerMoving`) would slot in cleanly since `closestInView` already handles 3D.
+- **Mobile identify in 3D**: The reticle is 2D-only, so mobile users have no way to identify a dot in the 3D galaxy view at all. Either re-enable the reticle in 3D (it worked previously, offset to `top: 66%` because the camera rotates about screen center) or add Option A tap-to-identify — `closestInView` already handles the 3D projection either way.
+
+- **Galaxy GL teardown**: nothing in `galaxy-*.ts` ever calls `deleteBuffer`/`deleteTexture`/`deleteProgram`, so ~2.5 MB of GPU objects allocated on first 3D entry are held for the session. A release hook on the `modeReactive` watcher would need a matching re-init path (`built`/`initialized`/`linkFailed` flags all reset correctly, so this is mostly plumbing).
+
+- **Galaxy sprite fade**: the slices have a camera-proximity fade and radial vignette; the sprites have neither, so flying into the disk fills the screen with sprite fog exactly as the slices fade out.
+
+- **Kiosk hardening**: cap `DayRollup.planets` (uncapped, keyed by planet name over a ~6,300-row catalog — quota exhaustion silently stops all stats); gate `?kioskStats=1`; lazy-`import()` the kiosk bundle so non-kiosk visitors don't ship it; wire the dead `KIOSK_QR_AUTOCLOSE_MS` into `KioskQrModal`.
+
+- **Consolidate the design docs**: `TODOstaticConst.md` (constellation static-asset precompute + 2D pop-in fade) and `MarkerTuning.html` §3 (zoom-adaptive marker scaling, "awaiting approval") are both open work items sitting at the repo root, the latter in HTML rather than Markdown.
 
